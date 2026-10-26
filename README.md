@@ -61,12 +61,12 @@ A top-level CLI session model (`--model`) and the GSD subagent tier mappings are
 | `gemini-review` | `opencode` | `openrouter/google/gemini-4-argon` | OpenRouter API |
 | `deepseek-review` | `opencode` | `openrouter/deepseek/deepseek-v3.2` | OpenRouter API |
 
-All five are defined under `review.reviewer_instances`, *not* `review.models`. Their presence does not mean all five run each time: `review.default_reviewers` controls the selected subset.
+All five are defined under `review.reviewer_instances`, *not* `review.models`. Their presence does not mean all five run each time: `review.default_reviewers` controls the selected subset. `deepseek-review` is defined but currently not selected by any profile.
 
 | Who produced the plan? | Selected reviewers |
 |---|---|
-| **Codex / Astra** | Fable + Grok + Gemini + DeepSeek |
-| **Claude / Fable** | Astra + Grok + Gemini + DeepSeek |
+| **Codex / Astra** | Fable + Grok + Gemini |
+| **Claude / Fable** | Astra + Grok + Gemini |
 
 `review.parallel_lanes` stays `false`: reviews execute sequentially, which is simpler for rate limits and billing. The OpenCode reviewer instances can be expanded independently as new models become available.
 
@@ -233,7 +233,7 @@ gsd-cli codex review-codex-plan
 # $gsd-verify-work 1
 ```
 
-The review subset for Codex-authored plans is Fable, Grok, Gemini and DeepSeek. Execution preserves that subset.
+The review subset for Codex-authored plans is Fable, Grok and Gemini. Execution preserves that subset.
 
 ### Workflow B — Fable plans, Codex executes
 

@@ -133,15 +133,15 @@ Every launch also writes `model_overrides` for the launched runtime from the lau
 
 `init [claude|codex]` configures the Claude tier mappings **Fable / Opus / Sonnet** (as the Agent-tool aliases `fable` / `opus` / `sonnet`, currently Fable 5.1 / Opus 5.5 / Sonnet 5.5); Codex tier mappings **Astra / Sol / Luna**; the phase tiers (`planning`, `discuss`, `research`, `verification` = `opus`, `execution` = `sonnet`); the per-agent pins in `model_overrides` for the given runtime (default `claude`); five reviewer instances; sequential review by default. It removes an explicit project-level `runtime` field so per-session `GSD_RUNTIME` can select the runtime. Existing unrelated settings are preserved.
 
-The initial default reviewers are Fable, Grok, Gemini, and DeepSeek. A Claude-led planning profile replaces Fable with Astra to avoid self-review.
+The initial default reviewers are Fable, Grok, and Gemini. DeepSeek stays defined as a reviewer instance but is not selected by default. A Claude-led planning profile replaces Fable with Astra to avoid self-review.
 
 ## 4. Use the launcher
 
 ```bash
-# Codex/Astra planning; Fable, Grok, Gemini, DeepSeek review
+# Codex/Astra planning; Fable, Grok, Gemini review
 gsd-cli codex plan
 
-# Claude/Fable planning; Astra, Grok, Gemini, DeepSeek review
+# Claude/Fable planning; Astra, Grok, Gemini review
 gsd-cli claude plan
 
 # Execution profiles preserve currently configured reviewer defaults

@@ -50,7 +50,8 @@ REVIEWERS = {
     "gemini-review": {"cli": "opencode", "model": "openrouter/google/gemini-4-argon"},
     "deepseek-review": {"cli": "opencode", "model": "openrouter/deepseek/deepseek-v3.2"},
 }
-OTHER_REVIEWERS = ["grok-review", "gemini-review", "deepseek-review"]
+# deepseek-review stays defined in REVIEWERS but is not selected by default.
+OTHER_REVIEWERS = ["grok-review", "gemini-review"]
 
 # Per-agent tier pins for agents whose GSD phase type is broader than the job:
 # mechanical research/verification agents that would otherwise ride the high

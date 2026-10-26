@@ -62,8 +62,7 @@
     "default_reviewers": [
       "fable-review",
       "grok-review",
-      "gemini-review",
-      "deepseek-review"
+      "gemini-review"
     ],
     "parallel_lanes": false
   },

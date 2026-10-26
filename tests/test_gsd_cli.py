@@ -113,7 +113,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(invocation["cwd"], str(self.project))
         self.assertEqual(
             self.config()["review"]["default_reviewers"],
-            ["fable-review", "grok-review", "gemini-review", "deepseek-review"],
+            ["fable-review", "grok-review", "gemini-review"],
         )
 
     def test_claude_plan_chooses_astra_reviewer(self):
@@ -124,7 +124,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(self.invocation()["runtime"], "claude")
         self.assertEqual(
             self.config()["review"]["default_reviewers"],
-            ["astra-review", "grok-review", "gemini-review", "deepseek-review"],
+            ["astra-review", "grok-review", "gemini-review"],
         )
 
     def test_execution_preserves_reviewers_and_changes_execution_tier(self):
