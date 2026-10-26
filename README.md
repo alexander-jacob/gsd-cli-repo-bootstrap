@@ -181,6 +181,15 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
 
+Execution profiles accept `--insecure` before the optional `--` separator:
+
+```bash
+gsd-cli claude exec-opus --insecure
+gsd-cli codex exec-high --insecure -- --no-alt-screen
+```
+
+This passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex. It skips permission prompts; Codex also disables sandboxing (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). Use it only when you intend to grant that access. Subscription billing guards still apply. Planning and review profiles reject this launcher option. Arguments after `--` are forwarded unchanged.
+
 ### Workflow A — Astra plans, Claude executes
 
 ```bash

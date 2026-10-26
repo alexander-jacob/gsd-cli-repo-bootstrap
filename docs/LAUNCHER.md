@@ -154,6 +154,15 @@ gsd-cli claude review-codex-plan
 
 Extra CLI args can be forwarded after `--`, e.g. `gsd-cli codex plan -- --help`.
 
+All execution profiles support `--insecure` before `--`, for example:
+
+```bash
+gsd-cli claude exec-sonnet --insecure
+gsd-cli codex exec-medium --insecure -- --no-alt-screen
+```
+
+The launcher translates it to Claude's `--dangerously-skip-permissions` or Codex's `--dangerously-bypass-approvals-and-sandbox`. These disable permission prompts; the Codex flag also disables sandboxing. Use this option only when you intend to grant that access. It applies to the launched CLI session, keeps subscription billing guards active, and is rejected for planning/review profiles. An `--insecure` after `--` is forwarded literally rather than translated.
+
 **Example phase handoff:** Run `gsd-cli codex plan`, discuss/plan the phase using `$gsd-*` commands, exit Codex, run `gsd-cli claude exec-opus`, and execute the phase using `/gsd-execute-phase`. The project `.planning/` artifacts serve as the handoff.
 
 The custom launcher supports Codex and Claude profiles; OpenCode runs as an *external reviewer* through GSD. To work interactively inside OpenCode, launch `opencode` directly (assuming GSD was installed for that CLI).

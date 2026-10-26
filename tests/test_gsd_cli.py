@@ -128,6 +128,44 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(self.run_launcher("claude", "review-claude-plan").returncode, 0)
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
 
+    def test_insecure_execution_translates_runtime_flags(self):
+        self.initialize()
+        for runtime, profiles, flag in (
+            ("claude", ("exec-opus", "exec-sonnet"), "--dangerously-skip-permissions"),
+            ("codex", ("exec-high", "exec-medium", "exec-low"),
+             "--dangerously-bypass-approvals-and-sandbox"),
+        ):
+            for profile in profiles:
+                with self.subTest(runtime=runtime, profile=profile):
+                    result = self.run_launcher(runtime, profile, "--insecure", "--", "--help")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.invocation()["args"][2:], [flag, "--help"])
+
+    def test_insecure_after_separator_is_forwarded_unchanged(self):
+        self.initialize()
+        result = self.run_launcher("codex", "exec-high", "--", "--insecure")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.invocation()["args"][2:], ["--insecure"])
+
+    def test_insecure_rejected_outside_execution_without_config_changes(self):
+        self.initialize()
+        original = self.config_path.read_bytes()
+        for profile in ("plan", "review-claude-plan"):
+            result = self.run_launcher("codex", profile, "--insecure")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("only supported for execution", result.stderr)
+            self.assertEqual(self.config_path.read_bytes(), original)
+            self.assertFalse(self.log.exists())
+
+    def test_insecure_preserves_billing_guard(self):
+        self.initialize()
+        env = self.env.copy()
+        env["OPENAI_API_KEY"] = "fake-key"
+        result = self.run_launcher("codex", "exec-high", "--insecure", env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("OPENAI_API_KEY", result.stderr)
+        self.assertFalse(self.log.exists())
+
     def test_api_key_guard_blocks_subscription_mode(self):
         self.initialize()
         guarded_env = self.env.copy()

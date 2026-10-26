@@ -6,12 +6,13 @@ Commands:
   gsd-cli status
   gsd-cli codex plan [-- CLI_ARGS...]
   gsd-cli claude plan [-- CLI_ARGS...]
-  gsd-cli claude exec-opus|exec-sonnet [-- CLI_ARGS...]
-  gsd-cli codex exec-high|exec-medium|exec-low [-- CLI_ARGS...]
+  gsd-cli claude exec-opus|exec-sonnet [--insecure] [-- CLI_ARGS...]
+  gsd-cli codex exec-high|exec-medium|exec-low [--insecure] [-- CLI_ARGS...]
   gsd-cli codex|claude review-codex-plan|review-claude-plan [-- CLI_ARGS...]
 
 Run within a GSD project (or a subdirectory). Config changes are atomic and
 limited to the explicit policy keys. Execution profiles preserve reviewers.
+--insecure skips runtime permission checks (Codex also disables sandboxing).
 """
 
 import json
@@ -166,6 +167,18 @@ def main() -> None:
         usage()
         sys.exit(f"Unsupported runtime/profile: {runtime}/{profile}")
 
+    args = sys.argv[3:]
+    separator = args.index("--") if "--" in args else len(args)
+    launcher_args, forwarded_args = args[:separator], args[separator + 1:]
+    insecure = "--insecure" in launcher_args
+    if insecure and not profile.startswith("exec-"):
+        sys.exit("--insecure is only supported for execution profiles.")
+    args = [arg for arg in launcher_args if arg != "--insecure"] + forwarded_args
+    if insecure:
+        flag = ("--dangerously-skip-permissions" if runtime == "claude"
+                else "--dangerously-bypass-approvals-and-sandbox")
+        args.insert(0, flag)
+
     session_model, phase_changes, reviewers = PROFILES[key]
     review = data.get("review", {})
     if not all(name in review.get("reviewer_instances", {}) for name in REVIEWERS):
@@ -182,9 +195,6 @@ def main() -> None:
         review["default_reviewers"] = reviewers.copy()
     save(path, data)
 
-    args = sys.argv[3:]
-    if args and args[0] == "--":
-        args = args[1:]
     env = os.environ.copy()
     env["GSD_RUNTIME"] = runtime
     print(f"GSD: {runtime}/{profile} | model={session_model} | reviewers={','.join(chosen_reviewers)}", file=sys.stderr)
