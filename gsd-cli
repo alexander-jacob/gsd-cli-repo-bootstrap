@@ -51,8 +51,8 @@ CLAUDE_PLAN_REVIEWERS = ["astra-review", *OTHER_REVIEWERS]
 # Claude execution profiles pin verification (code review + verifier) to the
 # high tier so the review runs on Fable regardless of the execution tier.
 PROFILES = {
-    ("codex", "plan"): ("gpt-6-astra", {"planning": "opus", "discuss": "opus"}, CODEX_PLAN_REVIEWERS),
-    ("claude", "plan"): ("claude-fable-5-1", {"planning": "opus", "discuss": "opus"}, CLAUDE_PLAN_REVIEWERS),
+    ("codex", "plan"): ("gpt-6-astra", {"planning": "opus", "discuss": "opus", "research": "opus"}, CODEX_PLAN_REVIEWERS),
+    ("claude", "plan"): ("claude-fable-5-1", {"planning": "opus", "discuss": "opus", "research": "opus"}, CLAUDE_PLAN_REVIEWERS),
     ("claude", "exec-opus"): ("claude-opus-5-5", {"execution": "sonnet", "verification": "opus"}, None),
     ("claude", "exec-sonnet"): ("claude-sonnet-5-5", {"execution": "haiku", "verification": "opus"}, None),
     ("codex", "exec-high"): ("gpt-6-astra", {"execution": "opus"}, None),
@@ -117,6 +117,7 @@ def initialize(data: dict) -> None:
     models = data.setdefault("models", {})
     models.setdefault("planning", "opus")
     models.setdefault("discuss", "opus")
+    models.setdefault("research", "opus")
     models.setdefault("execution", "sonnet")
     review = data.setdefault("review", {})
     review.setdefault("reviewer_instances", {}).update(REVIEWERS)

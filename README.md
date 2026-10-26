@@ -171,8 +171,8 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 
 | Command | Top-level CLI model | GSD agent setting changed | Reviewer preset |
 |---|---|---|---|
-| `gsd-cli codex plan` | Astra | planning/discuss = `opus` | Fable + 3 OpenRouter |
-| `gsd-cli claude plan` | Fable | planning/discuss = `opus` | Astra + 3 OpenRouter |
+| `gsd-cli codex plan` | Astra | planning/discuss/research = `opus` | Fable + 3 OpenRouter |
+| `gsd-cli claude plan` | Fable | planning/discuss/research = `opus` | Astra + 3 OpenRouter |
 | `gsd-cli claude exec-opus` | Opus 5.5 | execution = `sonnet`, verification = `opus` | preserved |
 | `gsd-cli claude exec-sonnet` | Sonnet 5.5 | execution = `haiku`, verification = `opus` | preserved |
 | `gsd-cli codex exec-high` | Astra | execution = `opus` | preserved |
@@ -181,7 +181,7 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 | `gsd-cli codex review-claude-plan` | Astra | none | Astra + 3 OpenRouter |
 | `gsd-cli claude review-codex-plan` | Fable | none | Fable + 3 OpenRouter |
 
-`verification` covers the GSD code reviewer and verifier agents that run after execution. The Claude execution profiles pin it to the `opus` tier so the post-execution review always runs on Fable, independent of the execution tier.
+`research` covers the phase/project researcher agents, which GSD otherwise routes to the medium tier; the plan profiles lift them to the high tier so research runs on the same model as planning. `verification` covers the GSD code reviewer and verifier agents that run after execution. The Claude execution profiles pin it to the `opus` tier so the post-execution review always runs on Fable, independent of the execution tier.
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
 
