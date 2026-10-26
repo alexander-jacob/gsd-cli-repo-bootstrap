@@ -4,7 +4,7 @@
 Commands:
   gsd-cli init [claude|codex]
   gsd-cli status
-  gsd-cli codex plan [-- CLI_ARGS...]
+  gsd-cli codex plan [--secure] [-- CLI_ARGS...]
   gsd-cli claude plan [-- CLI_ARGS...]
   gsd-cli claude exec-opus|exec-sonnet [--secure] [-- CLI_ARGS...]
   gsd-cli codex exec-high|exec-medium|exec-low [--secure] [-- CLI_ARGS...]
@@ -14,9 +14,9 @@ Run within a GSD project (or a subdirectory). Config changes are atomic and
 limited to the explicit policy keys. Execution profiles preserve reviewers.
 Every launch materializes per-agent tier pins (AGENT_TIERS) into
 model_overrides for the launched runtime; other override keys are kept.
-Execution profiles skip runtime permission checks by default (Codex also
-disables sandboxing); --secure keeps the CLI's permission prompts instead.
-Planning and review profiles always keep them.
+Execution profiles and Codex planning skip runtime permission checks by default
+(Codex also disables sandboxing); --secure keeps the CLI's permission prompts
+instead. Claude planning and review profiles always keep them.
 Codex sessions also get -c model_reasoning_effort=<tier effort> for the
 session model (Astra high, Sol medium, Luna low); Codex otherwise defaults
 Astra to medium. Claude Code has no equivalent launch flag.
@@ -231,7 +231,7 @@ def main() -> None:
     launcher_args, forwarded_args = args[:separator], args[separator + 1:]
     secure = "--secure" in launcher_args
     args = [arg for arg in launcher_args if arg != "--secure"] + forwarded_args
-    if profile.startswith("exec-") and not secure:
+    if (profile.startswith("exec-") or key == ("codex", "plan")) and not secure:
         flag = ("--dangerously-skip-permissions" if runtime == "claude"
                 else "--dangerously-bypass-approvals-and-sandbox")
         args.insert(0, flag)
