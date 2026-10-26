@@ -92,7 +92,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         invocation = self.invocation()
         self.assertEqual(invocation["program"], "codex")
         self.assertEqual(invocation["runtime"], "codex")
-        self.assertEqual(invocation["args"], ["--model", "gpt-6-astra", "--help"])
+        self.assertEqual(invocation["args"], ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high", "--help"])
         self.assertEqual(invocation["cwd"], str(self.project))
         self.assertEqual(
             self.config()["review"]["default_reviewers"],
@@ -122,6 +122,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(config["review"]["default_reviewers"][0], "astra-review")
         result = self.run_launcher("codex", "exec-high")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.invocation()["args"], ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"])
         self.assertEqual(self.config()["models"]["execution"], "opus")
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
 
@@ -154,6 +155,15 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
                   "gsd-mempalace-curator"}
         self.assertEqual(set(overrides) - {"gsd-ui-auditor"}, pinned)
 
+    def test_codex_session_effort_follows_tier_and_claude_gets_none(self):
+        self.initialize()
+        for profile, expected in (("exec-medium", "medium"), ("exec-low", "low"), ("plan", "high")):
+            with self.subTest(profile=profile):
+                self.assertEqual(self.run_launcher("codex", profile).returncode, 0)
+                self.assertEqual(self.invocation()["args"][2:4], ["-c", f"model_reasoning_effort={expected}"])
+        self.assertEqual(self.run_launcher("claude", "exec-opus", "--", "--help").returncode, 0)
+        self.assertEqual(self.invocation()["args"], ["--model", "claude-opus-5-5", "--help"])
+
     def test_explicit_reviewer_preset_uses_plan_author(self):
         self.initialize()
         self.assertEqual(self.run_launcher("claude", "plan").returncode, 0)
@@ -173,13 +183,13 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
                 with self.subTest(runtime=runtime, profile=profile):
                     result = self.run_launcher(runtime, profile, "--insecure", "--", "--help")
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(self.invocation()["args"][2:], [flag, "--help"])
+                    self.assertEqual(self.invocation()["args"][-2:], [flag, "--help"])
 
     def test_insecure_after_separator_is_forwarded_unchanged(self):
         self.initialize()
         result = self.run_launcher("codex", "exec-high", "--", "--insecure")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"][2:], ["--insecure"])
+        self.assertEqual(self.invocation()["args"][-1:], ["--insecure"])
 
     def test_insecure_rejected_outside_execution_without_config_changes(self):
         self.initialize()

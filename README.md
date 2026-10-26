@@ -47,6 +47,8 @@ This repository contains a small, Python standard-library-only `gsd-cli` launche
 
 The Claude entries are **Agent-tool aliases**, not full model IDs: Claude Code spawns subagents only by `fable`/`opus`/`sonnet`/`haiku` (each resolving to the latest model of that family). GSD cannot map a full ID such as `claude-opus-5-5` back to an alias; it warns, drops the value, and the subagent silently inherits the session model — so the tier mapping would have no effect.
 
+Codex launches also pass `-c model_reasoning_effort=<effort>` for the session model's tier (Astra `high`, Sol `medium`, Luna `low`); without it Codex runs Astra at its `medium` default, which is what the orchestrator uses for discuss/plan work it does inline. GSD subagents get their own effort from the GSD profile. Claude Code has no equivalent launch flag.
+
 A top-level CLI session model (`--model`) and the GSD subagent tier mappings are **different settings**. The launcher sets both as appropriate for each profile.
 
 ### Reviewer pool
