@@ -127,7 +127,7 @@ gsd-cli init
 gsd-cli status
 ```
 
-`init` configures the Claude tier mappings **Fable 5.1 / Opus 5.5 / Sonnet 5.5**; Codex tier mappings **Astra / Sol / Luna**; five reviewer instances; sequential review by default. It removes an explicit project-level `runtime` field so per-session `GSD_RUNTIME` can select the runtime. Existing unrelated settings are preserved.
+`init` configures the Claude tier mappings **Fable / Opus / Sonnet** (as the Agent-tool aliases `fable` / `opus` / `sonnet`, currently Fable 5.1 / Opus 5.5 / Sonnet 5.5); Codex tier mappings **Astra / Sol / Luna**; five reviewer instances; sequential review by default. It removes an explicit project-level `runtime` field so per-session `GSD_RUNTIME` can select the runtime. Existing unrelated settings are preserved.
 
 The initial default reviewers are Fable, Grok, Gemini, and DeepSeek. A Claude-led planning profile replaces Fable with Astra to avoid self-review.
 
@@ -141,8 +141,8 @@ gsd-cli codex plan
 gsd-cli claude plan
 
 # Execution profiles preserve currently configured reviewer defaults
-gsd-cli claude exec-opus
-gsd-cli claude exec-sonnet
+gsd-cli claude exec-opus      # execution on Opus, code review + verifier on Fable
+gsd-cli claude exec-sonnet    # execution on Sonnet, code review + verifier on Fable
 gsd-cli codex exec-high
 gsd-cli codex exec-medium
 gsd-cli codex exec-low

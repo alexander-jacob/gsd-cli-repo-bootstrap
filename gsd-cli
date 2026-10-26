@@ -22,10 +22,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Claude subagents are spawned through Claude Code's Agent tool, which accepts
+# only the aliases fable/opus/sonnet/haiku (resolved to the latest model of each
+# family), never full model IDs. GSD drops a full ID it cannot map back to an
+# alias and the subagent silently inherits the session model instead.
 CLAUDE_MODELS = {
-    "opus": {"model": "claude-fable-5-1"},
-    "sonnet": {"model": "claude-opus-5-5"},
-    "haiku": {"model": "claude-sonnet-5-5"},
+    "opus": {"model": "fable"},
+    "sonnet": {"model": "opus"},
+    "haiku": {"model": "sonnet"},
 }
 CODEX_MODELS = {
     "opus": {"model": "gpt-6-astra", "reasoning_effort": "high"},
@@ -44,11 +48,13 @@ CODEX_PLAN_REVIEWERS = ["fable-review", *OTHER_REVIEWERS]
 CLAUDE_PLAN_REVIEWERS = ["astra-review", *OTHER_REVIEWERS]
 
 # (runtime, profile) -> (top-level session model, phase overrides, reviewer preset)
+# Claude execution profiles pin verification (code review + verifier) to the
+# high tier so the review runs on Fable regardless of the execution tier.
 PROFILES = {
     ("codex", "plan"): ("gpt-6-astra", {"planning": "opus", "discuss": "opus"}, CODEX_PLAN_REVIEWERS),
     ("claude", "plan"): ("claude-fable-5-1", {"planning": "opus", "discuss": "opus"}, CLAUDE_PLAN_REVIEWERS),
-    ("claude", "exec-opus"): ("claude-opus-5-5", {"execution": "sonnet"}, None),
-    ("claude", "exec-sonnet"): ("claude-sonnet-5-5", {"execution": "haiku"}, None),
+    ("claude", "exec-opus"): ("claude-opus-5-5", {"execution": "sonnet", "verification": "opus"}, None),
+    ("claude", "exec-sonnet"): ("claude-sonnet-5-5", {"execution": "haiku", "verification": "opus"}, None),
     ("codex", "exec-high"): ("gpt-6-astra", {"execution": "opus"}, None),
     ("codex", "exec-medium"): ("gpt-6.1-sol", {"execution": "sonnet"}, None),
     ("codex", "exec-low"): ("gpt-6-luna", {"execution": "haiku"}, None),

@@ -72,7 +72,11 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         config = self.config()
         self.assertEqual(config["custom"], {"keep": True})
         self.assertNotIn("runtime", config)
-        self.assertEqual(config["model_policy"]["runtime_tiers"]["claude"]["opus"]["model"], "claude-fable-5-1")
+        # Claude tiers must be Agent-tool aliases, not full IDs (GSD cannot map
+        # a full ID back to an alias and would spawn subagents with no model).
+        claude_tiers = config["model_policy"]["runtime_tiers"]["claude"]
+        self.assertEqual({tier: entry["model"] for tier, entry in claude_tiers.items()},
+                         {"opus": "fable", "sonnet": "opus", "haiku": "sonnet"})
         self.assertEqual(config["model_policy"]["runtime_tiers"]["codex"]["opus"]["model"], "gpt-6-astra")
         self.assertEqual(len(config["review"]["reviewer_instances"]), 5)
         self.assertEqual(config["review"]["default_reviewers"][0], "fable-review")
@@ -114,6 +118,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(self.invocation()["args"][:2], ["--model", "claude-sonnet-5-5"])
         config = self.config()
         self.assertEqual(config["models"]["execution"], "haiku")
+        self.assertEqual(config["models"]["verification"], "opus")
         self.assertEqual(config["review"]["default_reviewers"][0], "astra-review")
         result = self.run_launcher("codex", "exec-high")
         self.assertEqual(result.returncode, 0, result.stderr)

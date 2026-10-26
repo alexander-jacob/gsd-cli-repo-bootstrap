@@ -41,9 +41,11 @@ This repository contains a small, Python standard-library-only `gsd-cli` launche
 
 | GSD tier | Claude runtime | Codex runtime |
 |---|---|---|
-| `opus` (high) | `claude-fable-5-1` | `gpt-6-astra` |
-| `sonnet` (medium) | `claude-opus-5-5` | `gpt-6.1-sol` |
-| `haiku` (lower) | `claude-sonnet-5-5` | `gpt-6-luna` |
+| `opus` (high) | `fable` (Fable 5.1) | `gpt-6-astra` |
+| `sonnet` (medium) | `opus` (Opus 5.5) | `gpt-6.1-sol` |
+| `haiku` (lower) | `sonnet` (Sonnet 5.5) | `gpt-6-luna` |
+
+The Claude entries are **Agent-tool aliases**, not full model IDs: Claude Code spawns subagents only by `fable`/`opus`/`sonnet`/`haiku` (each resolving to the latest model of that family). GSD cannot map a full ID such as `claude-opus-5-5` back to an alias; it warns, drops the value, and the subagent silently inherits the session model — so the tier mapping would have no effect.
 
 A top-level CLI session model (`--model`) and the GSD subagent tier mappings are **different settings**. The launcher sets both as appropriate for each profile.
 
@@ -171,13 +173,15 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 |---|---|---|---|
 | `gsd-cli codex plan` | Astra | planning/discuss = `opus` | Fable + 3 OpenRouter |
 | `gsd-cli claude plan` | Fable | planning/discuss = `opus` | Astra + 3 OpenRouter |
-| `gsd-cli claude exec-opus` | Opus 5.5 | execution = `sonnet` | preserved |
-| `gsd-cli claude exec-sonnet` | Sonnet 5.5 | execution = `haiku` | preserved |
+| `gsd-cli claude exec-opus` | Opus 5.5 | execution = `sonnet`, verification = `opus` | preserved |
+| `gsd-cli claude exec-sonnet` | Sonnet 5.5 | execution = `haiku`, verification = `opus` | preserved |
 | `gsd-cli codex exec-high` | Astra | execution = `opus` | preserved |
 | `gsd-cli codex exec-medium` | Sol | execution = `sonnet` | preserved |
 | `gsd-cli codex exec-low` | Luna | execution = `haiku` | preserved |
 | `gsd-cli codex review-claude-plan` | Astra | none | Astra + 3 OpenRouter |
 | `gsd-cli claude review-codex-plan` | Fable | none | Fable + 3 OpenRouter |
+
+`verification` covers the GSD code reviewer and verifier agents that run after execution. The Claude execution profiles pin it to the `opus` tier so the post-execution review always runs on Fable, independent of the execution tier.
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
 
