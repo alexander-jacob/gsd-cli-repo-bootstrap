@@ -125,6 +125,12 @@ Inside Claude Code, `/status` should indicate subscription authentication. Avoid
 From this repository:
 
 ```bash
+task install
+```
+
+This requires Task. To install manually:
+
+```bash
 mkdir -p ~/.local/bin
 cp ./gsd-cli ~/.local/bin/gsd-cli
 chmod +x ~/.local/bin/gsd-cli

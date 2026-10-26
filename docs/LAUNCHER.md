@@ -107,6 +107,8 @@ Official reference: [GSD Core — Install on your runtime](https://github.com/op
 
 The script `gsd-cli` is a **separate local convenience launcher**, not the official GSD installer.
 
+Run `task install` from this repository to install it in `~/.local/bin` using Task, or install manually:
+
 ```bash
 mkdir -p ~/.local/bin
 cp gsd-cli ~/.local/bin/gsd-cli

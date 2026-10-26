@@ -1,0 +1,13 @@
+version: '3'
+
+tasks:
+  test:
+    desc: Run the offline test suite
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - python3 -m unittest discover -s tests -v
+
+  install:
+    desc: Install gsd-cli in the user's ~/.local/bin directory
+    cmds:
+      - install -D -m 0755 '{{.TASKFILE_DIR}}/gsd-cli' "$HOME/.local/bin/gsd-cli"
