@@ -122,7 +122,11 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(config["review"]["default_reviewers"][0], "astra-review")
         result = self.run_launcher("codex", "exec-high")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"], ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"])
+        self.assertEqual(
+            self.invocation()["args"],
+            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high",
+             "--dangerously-bypass-approvals-and-sandbox"],
+        )
         self.assertEqual(self.config()["models"]["execution"], "opus")
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
 
@@ -162,7 +166,10 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
                 self.assertEqual(self.run_launcher("codex", profile).returncode, 0)
                 self.assertEqual(self.invocation()["args"][2:4], ["-c", f"model_reasoning_effort={expected}"])
         self.assertEqual(self.run_launcher("claude", "exec-opus", "--", "--help").returncode, 0)
-        self.assertEqual(self.invocation()["args"], ["--model", "claude-opus-5-5", "--help"])
+        self.assertEqual(
+            self.invocation()["args"],
+            ["--model", "claude-opus-5-5", "--dangerously-skip-permissions", "--help"],
+        )
 
     def test_explicit_reviewer_preset_uses_plan_author(self):
         self.initialize()
@@ -172,40 +179,55 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(self.run_launcher("claude", "review-claude-plan").returncode, 0)
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
 
-    def test_insecure_execution_translates_runtime_flags(self):
+    BYPASS = {
+        "claude": "--dangerously-skip-permissions",
+        "codex": "--dangerously-bypass-approvals-and-sandbox",
+    }
+    EXEC_PROFILES = {"claude": ("exec-opus", "exec-sonnet"), "codex": ("exec-high", "exec-medium", "exec-low")}
+
+    def test_execution_bypasses_permissions_by_default(self):
         self.initialize()
-        for runtime, profiles, flag in (
-            ("claude", ("exec-opus", "exec-sonnet"), "--dangerously-skip-permissions"),
-            ("codex", ("exec-high", "exec-medium", "exec-low"),
-             "--dangerously-bypass-approvals-and-sandbox"),
-        ):
+        for runtime, profiles in self.EXEC_PROFILES.items():
             for profile in profiles:
                 with self.subTest(runtime=runtime, profile=profile):
-                    result = self.run_launcher(runtime, profile, "--insecure", "--", "--help")
+                    result = self.run_launcher(runtime, profile, "--", "--help")
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(self.invocation()["args"][-2:], [flag, "--help"])
+                    self.assertEqual(self.invocation()["args"][-2:], [self.BYPASS[runtime], "--help"])
 
-    def test_insecure_after_separator_is_forwarded_unchanged(self):
+    def test_secure_keeps_permission_prompts(self):
         self.initialize()
-        result = self.run_launcher("codex", "exec-high", "--", "--insecure")
+        for runtime, profiles in self.EXEC_PROFILES.items():
+            for profile in profiles:
+                with self.subTest(runtime=runtime, profile=profile):
+                    result = self.run_launcher(runtime, profile, "--secure", "--", "--help")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = self.invocation()["args"]
+                    self.assertNotIn(self.BYPASS[runtime], args)
+                    self.assertNotIn("--secure", args)
+                    self.assertEqual(args[-1], "--help")
+
+    def test_secure_after_separator_is_forwarded_unchanged(self):
+        self.initialize()
+        result = self.run_launcher("codex", "exec-high", "--", "--secure")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"][-1:], ["--insecure"])
+        self.assertEqual(self.invocation()["args"][-2:], [self.BYPASS["codex"], "--secure"])
 
-    def test_insecure_rejected_outside_execution_without_config_changes(self):
+    def test_planning_and_review_never_bypass_permissions(self):
         self.initialize()
-        original = self.config_path.read_bytes()
         for profile in ("plan", "review-claude-plan"):
-            result = self.run_launcher("codex", profile, "--insecure")
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("only supported for execution", result.stderr)
-            self.assertEqual(self.config_path.read_bytes(), original)
-            self.assertFalse(self.log.exists())
+            for extra in ((), ("--secure",)):
+                with self.subTest(profile=profile, extra=extra):
+                    result = self.run_launcher("codex", profile, *extra)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = self.invocation()["args"]
+                    self.assertNotIn(self.BYPASS["codex"], args)
+                    self.assertNotIn("--secure", args)
 
-    def test_insecure_preserves_billing_guard(self):
+    def test_default_bypass_preserves_billing_guard(self):
         self.initialize()
         env = self.env.copy()
         env["OPENAI_API_KEY"] = "fake-key"
-        result = self.run_launcher("codex", "exec-high", "--insecure", env=env)
+        result = self.run_launcher("codex", "exec-high", env=env)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("OPENAI_API_KEY", result.stderr)
         self.assertFalse(self.log.exists())

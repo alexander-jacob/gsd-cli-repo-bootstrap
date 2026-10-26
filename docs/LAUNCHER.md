@@ -158,14 +158,14 @@ gsd-cli claude review-codex-plan
 
 Extra CLI args can be forwarded after `--`, e.g. `gsd-cli codex plan -- --help`.
 
-All execution profiles support `--insecure` before `--`, for example:
+All execution profiles bypass permission prompts by default: the launcher adds Claude's `--dangerously-skip-permissions` or Codex's `--dangerously-bypass-approvals-and-sandbox` (the Codex flag also disables sandboxing), because phase execution is meant to run unattended. Pass `--secure` before `--` to keep the CLI's permission prompts instead, for example:
 
 ```bash
-gsd-cli claude exec-sonnet --insecure
-gsd-cli codex exec-medium --insecure -- --no-alt-screen
+gsd-cli claude exec-sonnet --secure
+gsd-cli codex exec-medium --secure -- --no-alt-screen
 ```
 
-The launcher translates it to Claude's `--dangerously-skip-permissions` or Codex's `--dangerously-bypass-approvals-and-sandbox`. These disable permission prompts; the Codex flag also disables sandboxing. Use this option only when you intend to grant that access. It applies to the launched CLI session, keeps subscription billing guards active, and is rejected for planning/review profiles. An `--insecure` after `--` is forwarded literally rather than translated.
+Either way the setting applies only to the launched CLI session and keeps the subscription billing guards active. Planning and review profiles never bypass permissions; `--secure` is accepted there as a no-op. A `--secure` after `--` is forwarded literally rather than interpreted.
 
 **Example phase handoff:** Run `gsd-cli codex plan`, discuss/plan the phase using `$gsd-*` commands, exit Codex, run `gsd-cli claude exec-opus`, and execute the phase using `/gsd-execute-phase`. The project `.planning/` artifacts serve as the handoff.
 

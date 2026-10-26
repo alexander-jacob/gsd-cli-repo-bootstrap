@@ -198,14 +198,14 @@ Every launch materializes this table into `model_overrides` **for the launched r
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
 
-Execution profiles accept `--insecure` before the optional `--` separator:
+Execution profiles **skip permission prompts by default**: the launcher passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex, which also disables Codex's sandbox (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). Phase execution is unattended by design, so this is the mode it is meant to run in; only launch it on a repository you intend to grant that access to. Pass `--secure` before the optional `--` separator to keep the CLI's own permission prompts:
 
 ```bash
-gsd-cli claude exec-opus --insecure
-gsd-cli codex exec-high --insecure -- --no-alt-screen
+gsd-cli claude exec-opus --secure
+gsd-cli codex exec-high --secure -- --no-alt-screen
 ```
 
-This passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex. It skips permission prompts; Codex also disables sandboxing (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). Use it only when you intend to grant that access. Subscription billing guards still apply. Planning and review profiles reject this launcher option. Arguments after `--` are forwarded unchanged.
+Planning and review profiles never bypass permissions (`--secure` is accepted there and has no effect). Subscription billing guards apply in both modes. Arguments after `--` are forwarded unchanged.
 
 ### Workflow A — Astra plans, Claude executes
 
