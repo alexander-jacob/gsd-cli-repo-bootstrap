@@ -2,7 +2,7 @@
 """GSD Core CLI launcher: subscription-backed model and reviewer profiles.
 
 Commands:
-  gsd-cli init
+  gsd-cli init [claude|codex]
   gsd-cli status
   gsd-cli codex plan [-- CLI_ARGS...]
   gsd-cli claude plan [-- CLI_ARGS...]
@@ -134,7 +134,7 @@ def save(path: Path, data: dict) -> None:
             os.unlink(filename)
 
 
-def initialize(data: dict) -> None:
+def initialize(data: dict, runtime: str = "claude") -> None:
     # Merge only our policy; keep other GSD settings and additional reviewers.
     policy = data.setdefault("model_policy", {})
     policy["provider"] = "generic"
@@ -147,6 +147,9 @@ def initialize(data: dict) -> None:
     models.setdefault("discuss", "opus")
     models.setdefault("research", "opus")
     models.setdefault("execution", "sonnet")
+    models.setdefault("verification", "opus")
+    # Pins are runtime-specific; seed them for `runtime` (any launch rewrites them).
+    materialize_agent_tiers(data, runtime)
     review = data.setdefault("review", {})
     review.setdefault("reviewer_instances", {}).update(REVIEWERS)
     review.setdefault("default_reviewers", CODEX_PLAN_REVIEWERS.copy())
@@ -193,11 +196,12 @@ def main() -> None:
     action = sys.argv[1]
 
     if action == "init":
-        if len(sys.argv) != 2:
-            sys.exit("Usage: gsd-cli init")
-        initialize(data)
+        if len(sys.argv) > 3 or (len(sys.argv) == 3 and sys.argv[2] not in ("claude", "codex")):
+            sys.exit("Usage: gsd-cli init [claude|codex]")
+        init_runtime = sys.argv[2] if len(sys.argv) == 3 else "claude"
+        initialize(data, init_runtime)
         save(path, data)
-        print(f"Initialized model tiers and five reviewer instances in {path}")
+        print(f"Initialized model tiers, phase tiers, {init_runtime} agent pins and five reviewer instances in {path}")
         return
 
     if action == "status":

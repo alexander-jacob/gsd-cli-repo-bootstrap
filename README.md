@@ -161,11 +161,19 @@ Once `.planning/config.json` exists, run from the project root (or a descendant)
 
 ```bash
 cd ~/projects/my-project
-gsd-cli init
+gsd-cli init            # or: gsd-cli init codex
 gsd-cli status
 ```
 
-`init` **merges** the Claude/Codex tier mappings and five reviewer instances into your current project config, sets initial reviewer defaults (Fable + OpenRouter), and removes an explicit top-level `runtime` value. It preserves unrelated settings. See [the complete example](examples/gsd-config-example.json).
+`init` **merges** the launcher's policy into your current project config and preserves unrelated settings:
+
+- `model_policy.runtime_tiers`: Claude tiers as Agent-tool aliases (`fable` / `opus` / `sonnet`), Codex tiers as full IDs with reasoning effort (Astra / Sol / Luna).
+- `models`: `planning`, `discuss`, `research` and `verification` on the `opus` tier, `execution` on `sonnet` — the same values the `plan` and `exec-opus` profiles set, so a project is consistent before its first launch. Existing values are kept.
+- `model_overrides`: the per-agent tier pins (see below), materialized for the runtime given as argument (default `claude`). Every launch rewrites them for its own runtime.
+- `review`: five reviewer instances and the initial default reviewers (Fable + OpenRouter).
+- Removes an explicit top-level `runtime` so `GSD_RUNTIME` can select the runtime per session.
+
+See [the complete example](examples/gsd-config-example.json).
 
 This is a **configuration example/merge**, not a recommendation to replace an existing `.planning/config.json` wholesale.
 
@@ -254,10 +262,11 @@ Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --p
 ## How the launcher works
 
 1. Finds `.planning/config.json` in the current directory or an ancestor.
-2. Loads project settings, merges/updates only selected fields, and atomically replaces the JSON file on changes.
-3. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
-4. Starts the CLI with `--model <session-model>`.
-5. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
+2. Loads project settings, merges/updates only selected fields, and atomically replaces the JSON file on changes: the profile's `models.<phase_type>` tiers, and `model_overrides` materialized from `AGENT_TIERS` for the launched runtime.
+3. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
+4. Refuses to start if an API-key environment variable would override subscription authentication for the runtime or a selected reviewer.
+5. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
+6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<tier effort>` for Codex, plus the permission-bypass flag for execution profiles unless `--secure` was given.
 
 Example with extra CLI options:
 
@@ -279,6 +288,7 @@ The launcher currently starts Claude or Codex, **not OpenCode as an interactive 
 
 - The launcher mutates **shared** `.planning/config.json` project settings. This is suitable for sequential handoffs. It is **not** safe to assume isolated settings for simultaneous write-capable sessions in the same checkout. Use separate worktrees/projects for that scenario.
 - Atomic JSON replacement prevents partial files but does **not** implement a multi-process configuration lock or eliminate lost updates from concurrent writes.
+- Every launch rewrites the runtime-specific parts of `config.json` (`models.execution`, `model_overrides`), so the file shows a diff after each runtime switch. Commit it as "whichever CLI ran last" or leave it uncommitted; it carries no information beyond the launcher's tables.
 - Some GSD installations (notably OpenCode and certain Codex-generated agent definitions) use install-time/static model configuration. Changing the tier mappings may require reinstalling/syncing the relevant GSD runtime artifacts.
 - Review instances reuse the same OpenCode adapter; these are separate model opinions, not four independently authenticated CLI installations.
 - Do not use `/gsd-review --all` unintentionally: it may run reviewers outside the selected defaults and incur additional charges.

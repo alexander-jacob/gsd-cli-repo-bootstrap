@@ -81,9 +81,25 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(len(config["review"]["reviewer_instances"]), 5)
         self.assertEqual(config["review"]["default_reviewers"][0], "fable-review")
         self.assertFalse(config["review"]["parallel_lanes"])
+        self.assertEqual(config["models"], {"planning": "opus", "discuss": "opus", "research": "opus",
+                                            "execution": "sonnet", "verification": "opus"})
+        # Agent pins are seeded in Claude form by default.
+        self.assertEqual(config["model_overrides"]["gsd-intel-updater"], "sonnet")
+        self.assertEqual(config["model_overrides"]["gsd-nyquist-auditor"], "opus")
         # Running init again should not break or truncate JSON.
         self.initialize()
         self.assertEqual(self.config()["custom"], {"keep": True})
+
+    def test_init_runtime_argument_selects_pin_form(self):
+        result = self.run_launcher("init", "codex")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.config()["model_overrides"]["gsd-intel-updater"], "gpt-6-luna")
+        self.assertEqual(self.config()["model_overrides"]["gsd-nyquist-auditor"], "gpt-6.1-sol")
+        for bad in (("init", "opencode"), ("init", "claude", "extra")):
+            with self.subTest(args=bad):
+                result = self.run_launcher(*bad)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Usage: gsd-cli init", result.stderr)
 
     def test_codex_plan_selects_fable_reviewer_and_runtime(self):
         self.initialize()
