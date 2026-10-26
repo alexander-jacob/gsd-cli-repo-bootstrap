@@ -127,6 +127,8 @@ gsd-cli init
 gsd-cli status
 ```
 
+Every launch also writes `model_overrides` for the launched runtime from the launcher's `AGENT_TIERS` table (mechanical agents such as `gsd-intel-updater` and `gsd-codebase-mapper` on the lower tier, `gsd-nyquist-auditor` and `gsd-pattern-mapper` on the medium tier). See the README for the full table.
+
 `init` configures the Claude tier mappings **Fable / Opus / Sonnet** (as the Agent-tool aliases `fable` / `opus` / `sonnet`, currently Fable 5.1 / Opus 5.5 / Sonnet 5.5); Codex tier mappings **Astra / Sol / Luna**; five reviewer instances; sequential review by default. It removes an explicit project-level `runtime` field so per-session `GSD_RUNTIME` can select the runtime. Existing unrelated settings are preserved.
 
 The initial default reviewers are Fable, Grok, Gemini, and DeepSeek. A Claude-led planning profile replaces Fable with Astra to avoid self-review.

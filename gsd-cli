@@ -12,6 +12,8 @@ Commands:
 
 Run within a GSD project (or a subdirectory). Config changes are atomic and
 limited to the explicit policy keys. Execution profiles preserve reviewers.
+Every launch materializes per-agent tier pins (AGENT_TIERS) into
+model_overrides for the launched runtime; other override keys are kept.
 --insecure skips runtime permission checks (Codex also disables sandboxing).
 """
 
@@ -44,6 +46,27 @@ REVIEWERS = {
     "deepseek-review": {"cli": "opencode", "model": "openrouter/deepseek/deepseek-v3.2"},
 }
 OTHER_REVIEWERS = ["grok-review", "gemini-review", "deepseek-review"]
+
+# Per-agent tier pins for agents whose GSD phase type is broader than the job:
+# mechanical research/verification agents that would otherwise ride the high
+# tier. Keyed by GSD tier so one table serves both runtimes; a launch
+# materializes it into model_overrides for the launched runtime (Claude needs
+# Agent-tool aliases, Codex needs full IDs, and GSD applies the value verbatim).
+# Agents absent here follow models.<phase_type> / the model profile.
+AGENT_TIERS = {
+    # execution-shaped verification / planning helpers -> medium tier
+    "gsd-nyquist-auditor": "sonnet",
+    "gsd-integration-checker": "sonnet",
+    "gsd-pattern-mapper": "sonnet",
+    "gsd-doc-verifier": "sonnet",
+    "gsd-research-synthesizer": "sonnet",
+    # bulk extraction / bookkeeping -> lower tier
+    "gsd-codebase-mapper": "haiku",
+    "gsd-intel-updater": "haiku",
+    "gsd-doc-classifier": "haiku",
+    "gsd-user-profiler": "haiku",
+    "gsd-mempalace-curator": "haiku",
+}
 CODEX_PLAN_REVIEWERS = ["fable-review", *OTHER_REVIEWERS]
 CLAUDE_PLAN_REVIEWERS = ["astra-review", *OTHER_REVIEWERS]
 
@@ -127,6 +150,15 @@ def initialize(data: dict) -> None:
     data.pop("runtime", None)
 
 
+def materialize_agent_tiers(data: dict, runtime: str) -> None:
+    """Write AGENT_TIERS into model_overrides using the runtime's tier map."""
+    tiers = data.get("model_policy", {}).get("runtime_tiers", {}).get(runtime, {})
+    overrides = data.get("model_overrides") or {}
+    for agent, tier in AGENT_TIERS.items():
+        overrides[agent] = tiers[tier]["model"]
+    data["model_overrides"] = overrides
+
+
 def guard_subscription_billing(runtime: str, reviewers: list[str]) -> None:
     uses_claude = runtime == "claude" or "fable-review" in reviewers
     uses_codex = runtime == "codex" or "astra-review" in reviewers
@@ -159,6 +191,7 @@ def main() -> None:
         print(json.dumps({
             "runtime": data.get("runtime", "(environment/marker)"),
             "models": data.get("models", {}),
+            "model_overrides": data.get("model_overrides", {}),
             "runtime_tiers": data.get("model_policy", {}).get("runtime_tiers", {}),
             "default_reviewers": data.get("review", {}).get("default_reviewers"),
             "reviewer_instances": data.get("review", {}).get("reviewer_instances", {}),
@@ -198,6 +231,7 @@ def main() -> None:
     guard_subscription_billing(runtime, chosen_reviewers)
 
     data.setdefault("models", {}).update(phase_changes)
+    materialize_agent_tiers(data, runtime)
     if reviewers is not None:
         review["default_reviewers"] = reviewers.copy()
     save(path, data)

@@ -181,6 +181,17 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 | `gsd-cli codex review-claude-plan` | Astra | none | Astra + 3 OpenRouter |
 | `gsd-cli claude review-codex-plan` | Fable | none | Fable + 3 OpenRouter |
 
+### Per-agent tier pins
+
+GSD phase types are broad: `research` also covers the intel updater and codebase mapper, `verification` also covers the test-writing Nyquist auditor. The launcher carries a small `AGENT_TIERS` table (in `gsd-cli`) that pins such mechanical agents to a lower tier, keyed by GSD tier word:
+
+| Agent | Tier | Claude / Codex |
+|---|---|---|
+| `gsd-nyquist-auditor`, `gsd-integration-checker`, `gsd-pattern-mapper`, `gsd-doc-verifier`, `gsd-research-synthesizer` | `sonnet` (medium) | Opus / Sol |
+| `gsd-codebase-mapper`, `gsd-intel-updater`, `gsd-doc-classifier`, `gsd-user-profiler`, `gsd-mempalace-curator` | `haiku` (lower) | Sonnet / Luna |
+
+Every launch materializes this table into `model_overrides` **for the launched runtime** — Claude gets Agent-tool aliases, Codex gets full model IDs — because GSD applies `model_overrides` values verbatim and has no per-runtime translation of its own. Override keys the launcher does not manage are preserved. Planners, researchers, the code reviewer and the verifier are deliberately not pinned: they follow `models.<phase_type>` and stay on the high tier.
+
 `research` covers the phase/project researcher agents, which GSD otherwise routes to the medium tier; the plan profiles lift them to the high tier so research runs on the same model as planning. `verification` covers the GSD code reviewer and verifier agents that run after execution. The Claude execution profiles pin it to the `opus` tier so the post-execution review always runs on Fable, independent of the execution tier.
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**

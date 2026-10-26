@@ -125,6 +125,35 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(self.config()["models"]["execution"], "opus")
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
 
+    def test_launch_materializes_agent_tiers_per_runtime(self):
+        self.initialize()
+        config = self.config()
+        config["model_overrides"] = {"gsd-ui-auditor": "custom-model", "gsd-intel-updater": "stale"}
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
+        overrides = self.config()["model_overrides"]
+        # Claude: Agent-tool aliases via the Claude tier map (haiku -> sonnet, sonnet -> opus).
+        self.assertEqual(overrides["gsd-intel-updater"], "sonnet")
+        self.assertEqual(overrides["gsd-codebase-mapper"], "sonnet")
+        self.assertEqual(overrides["gsd-nyquist-auditor"], "opus")
+        self.assertEqual(overrides["gsd-pattern-mapper"], "opus")
+        # Unmanaged override keys survive.
+        self.assertEqual(overrides["gsd-ui-auditor"], "custom-model")
+
+        self.assertEqual(self.run_launcher("codex", "exec-high").returncode, 0)
+        overrides = self.config()["model_overrides"]
+        # Codex: full IDs via the Codex tier map.
+        self.assertEqual(overrides["gsd-intel-updater"], "gpt-6-luna")
+        self.assertEqual(overrides["gsd-nyquist-auditor"], "gpt-6.1-sol")
+        self.assertEqual(overrides["gsd-ui-auditor"], "custom-model")
+        # Every pinned agent is present and nothing else was added.
+        pinned = {"gsd-nyquist-auditor", "gsd-integration-checker", "gsd-pattern-mapper",
+                  "gsd-doc-verifier", "gsd-research-synthesizer", "gsd-codebase-mapper",
+                  "gsd-intel-updater", "gsd-doc-classifier", "gsd-user-profiler",
+                  "gsd-mempalace-curator"}
+        self.assertEqual(set(overrides) - {"gsd-ui-auditor"}, pinned)
+
     def test_explicit_reviewer_preset_uses_plan_author(self):
         self.initialize()
         self.assertEqual(self.run_launcher("claude", "plan").returncode, 0)
