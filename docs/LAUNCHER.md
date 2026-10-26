@@ -158,15 +158,16 @@ gsd-cli claude review-codex-plan
 
 Extra CLI args can be forwarded after `--`, e.g. `gsd-cli codex plan -- --help`.
 
-All execution profiles and `gsd-cli codex plan` bypass permission prompts by default: the launcher adds Claude's `--dangerously-skip-permissions` or Codex's `--dangerously-bypass-approvals-and-sandbox` (the Codex flag also disables sandboxing), allowing execution and Codex planning to run unattended. Pass `--secure` before `--` to keep the CLI's permission prompts instead, for example:
+All execution and review profiles and `gsd-cli codex plan` bypass permission prompts by default: the launcher adds Claude's `--dangerously-skip-permissions` or Codex's `--dangerously-bypass-approvals-and-sandbox` (the Codex flag also disables sandboxing), allowing execution, reviews, and Codex planning to run unattended. Pass `--secure` before `--` to keep the CLI's permission prompts instead, for example:
 
 ```bash
 gsd-cli claude exec-sonnet --secure
 gsd-cli codex plan --secure
 gsd-cli codex exec-medium --secure -- --no-alt-screen
+gsd-cli codex review-codex-plan --secure
 ```
 
-Either way the setting applies only to the launched CLI session and keeps the subscription billing guards active. Claude planning and all review profiles keep the CLI's normal permissions; `--secure` is accepted there as a no-op. A `--secure` after `--` is forwarded literally rather than interpreted.
+Either way the setting applies only to the launched CLI session and keeps the subscription billing guards active. Claude planning keeps the CLI's normal permissions; `--secure` is accepted there as a no-op. A `--secure` after `--` is forwarded literally rather than interpreted.
 
 **Example phase handoff:** Run `gsd-cli codex plan`, discuss/plan the phase using `$gsd-*` commands, exit Codex, run `gsd-cli claude exec-opus`, and execute the phase using `/gsd-execute-phase`. The project `.planning/` artifacts serve as the handoff.
 

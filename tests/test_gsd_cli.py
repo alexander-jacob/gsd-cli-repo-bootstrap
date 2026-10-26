@@ -201,10 +201,13 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         "codex": "--dangerously-bypass-approvals-and-sandbox",
     }
     EXEC_PROFILES = {"claude": ("exec-opus", "exec-sonnet"), "codex": ("exec-high", "exec-medium", "exec-low")}
+    REVIEW_PROFILES = ("review-codex-plan", "review-claude-plan")
+    BYPASS_PROFILES = {"claude": (*EXEC_PROFILES["claude"], *REVIEW_PROFILES),
+                       "codex": ("plan", *EXEC_PROFILES["codex"], *REVIEW_PROFILES)}
 
-    def test_execution_bypasses_permissions_by_default(self):
+    def test_execution_and_reviews_bypass_permissions_by_default(self):
         self.initialize()
-        for runtime, profiles in self.EXEC_PROFILES.items():
+        for runtime, profiles in self.BYPASS_PROFILES.items():
             for profile in profiles:
                 with self.subTest(runtime=runtime, profile=profile):
                     result = self.run_launcher(runtime, profile, "--", "--help")
@@ -213,8 +216,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
 
     def test_secure_keeps_permission_prompts(self):
         self.initialize()
-        for runtime, profiles in {"claude": self.EXEC_PROFILES["claude"],
-                                  "codex": ("plan", *self.EXEC_PROFILES["codex"])}.items():
+        for runtime, profiles in self.BYPASS_PROFILES.items():
             for profile in profiles:
                 with self.subTest(runtime=runtime, profile=profile):
                     result = self.run_launcher(runtime, profile, "--secure", "--", "--help")
@@ -226,30 +228,27 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
 
     def test_secure_after_separator_is_forwarded_unchanged(self):
         self.initialize()
-        for profile in ("plan", "exec-high"):
+        for profile in ("plan", "exec-high", "review-codex-plan"):
             with self.subTest(profile=profile):
                 result = self.run_launcher("codex", profile, "--", "--secure")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.invocation()["args"][-2:], [self.BYPASS["codex"], "--secure"])
 
-    def test_claude_planning_and_all_reviews_keep_permissions(self):
+    def test_claude_planning_keeps_permissions(self):
         self.initialize()
-        for runtime, profiles in {"claude": ("plan", "review-codex-plan", "review-claude-plan"),
-                                  "codex": ("review-codex-plan", "review-claude-plan")}.items():
-            for profile in profiles:
-                for extra in ((), ("--secure",)):
-                    with self.subTest(runtime=runtime, profile=profile, extra=extra):
-                        result = self.run_launcher(runtime, profile, *extra)
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        args = self.invocation()["args"]
-                        self.assertNotIn(self.BYPASS[runtime], args)
-                        self.assertNotIn("--secure", args)
+        for extra in ((), ("--secure",)):
+            with self.subTest(extra=extra):
+                result = self.run_launcher("claude", "plan", *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.invocation()["args"]
+                self.assertNotIn(self.BYPASS["claude"], args)
+                self.assertNotIn("--secure", args)
 
     def test_default_bypass_preserves_billing_guard(self):
         self.initialize()
         env = self.env.copy()
         env["OPENAI_API_KEY"] = "fake-key"
-        for profile in ("plan", "exec-high"):
+        for profile in ("plan", "exec-high", "review-codex-plan"):
             with self.subTest(profile=profile):
                 result = self.run_launcher("codex", profile, env=env)
                 self.assertNotEqual(result.returncode, 0)

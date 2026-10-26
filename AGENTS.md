@@ -16,7 +16,7 @@ Use Python 3.10+; the launcher requires only the standard library. No build or d
 - `python3 -m unittest discover -s tests -v`: run the full offline test suite, matching CI's command. CI uses Python 3.11.
 - `python3 ./gsd-cli status`: inspect configuration from a directory containing an existing `.planning/config.json`, or one of its descendants.
 
-`init` and runtime profiles modify the target project's configuration. Runtime profiles also start an authenticated external CLI. On every launch the launcher writes `models.<phase_type>` from the profile and materializes `AGENT_TIERS` into `model_overrides` for the launched runtime; Codex launches add `-c model_reasoning_effort=<tier effort>`; execution profiles and Codex planning add the runtime's permission-bypass flag unless `--secure` is given.
+`init` and runtime profiles modify the target project's configuration. Runtime profiles also start an authenticated external CLI. On every launch the launcher writes `models.<phase_type>` from the profile and materializes `AGENT_TIERS` into `model_overrides` for the launched runtime; Codex launches add `-c model_reasoning_effort=<tier effort>`; every profile except Claude planning adds the runtime's permission-bypass flag unless `--secure` is given.
 
 ## Model Routing Invariants
 
@@ -48,4 +48,4 @@ Pull requests should describe the behavior changed, explain why, link relevant i
 
 Never commit API keys, CLI authentication files, or local `.planning/` state. Preserve subscription billing guards and atomic configuration writes. Use separate worktrees for concurrent sessions that modify project settings.
 
-Execution profiles and Codex planning bypass CLI permission prompts by default (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`); `--secure` restores the CLI's normal permission settings. Claude planning and all review profiles must never receive an automatic bypass flag. Keep that split when adding profiles.
+Execution, review, and Codex planning profiles bypass CLI permission prompts by default (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`); `--secure` restores the CLI's normal permission settings. Claude planning must never receive an automatic bypass flag. Keep that split when adding profiles.

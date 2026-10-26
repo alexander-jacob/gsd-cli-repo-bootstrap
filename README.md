@@ -206,15 +206,16 @@ Every launch materializes this table into `model_overrides` **for the launched r
 
 The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
 
-Execution profiles and `gsd-cli codex plan` **skip permission prompts by default**: the launcher passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex, which also disables Codex's sandbox (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). This allows execution and Codex planning to run unattended; only launch them on a repository you intend to grant that access to. Pass `--secure` before the optional `--` separator to keep the CLI's own permission prompts:
+Execution and review profiles and `gsd-cli codex plan` **skip permission prompts by default**: the launcher passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex, which also disables Codex's sandbox (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). This allows execution, reviews, and Codex planning to run unattended; only launch them on a repository you intend to grant that access to. Pass `--secure` before the optional `--` separator to keep the CLI's own permission prompts:
 
 ```bash
 gsd-cli claude exec-opus --secure
 gsd-cli codex plan --secure
 gsd-cli codex exec-high --secure -- --no-alt-screen
+gsd-cli codex review-codex-plan --secure
 ```
 
-Claude planning and all review profiles keep the CLI's normal permissions (`--secure` is accepted there and has no effect). Subscription billing guards apply in both modes. Arguments after `--` are forwarded unchanged.
+Claude planning keeps the CLI's normal permissions (`--secure` is accepted there and has no effect). Subscription billing guards apply in both modes. Arguments after `--` are forwarded unchanged.
 
 ### Workflow A — Astra plans, Claude executes
 
@@ -267,7 +268,7 @@ Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --p
 3. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
 4. Refuses to start if an API-key environment variable would override subscription authentication for the runtime or a selected reviewer.
 5. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
-6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<tier effort>` for Codex, plus the permission-bypass flag for execution profiles and Codex planning unless `--secure` was given.
+6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<tier effort>` for Codex, plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
 
 Example with extra CLI options:
 
