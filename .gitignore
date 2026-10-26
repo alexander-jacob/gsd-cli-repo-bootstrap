@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# IDE, OS, local scratch
+.idea/
+.vscode/
+.DS_Store
+*.swp
+.env
+.env.*
+!.env.example
+
+# Developer-specific project state (if a GSD project is initialized here)
+.planning/

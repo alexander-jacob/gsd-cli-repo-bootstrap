@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""GSD Core CLI launcher: subscription-backed model and reviewer profiles.
+
+Commands:
+  gsd-cli init
+  gsd-cli status
+  gsd-cli codex plan [-- CLI_ARGS...]
+  gsd-cli claude plan [-- CLI_ARGS...]
+  gsd-cli claude exec-opus|exec-sonnet [-- CLI_ARGS...]
+  gsd-cli codex exec-high|exec-medium|exec-low [-- CLI_ARGS...]
+  gsd-cli codex|claude review-codex-plan|review-claude-plan [-- CLI_ARGS...]
+
+Run within a GSD project (or a subdirectory). Config changes are atomic and
+limited to the explicit policy keys. Execution profiles preserve reviewers.
+"""
+
+import json
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+CLAUDE_MODELS = {
+    "opus": {"model": "claude-fable-5-1"},
+    "sonnet": {"model": "claude-opus-5-5"},
+    "haiku": {"model": "claude-sonnet-5-5"},
+}
+CODEX_MODELS = {
+    "opus": {"model": "gpt-6-astra", "reasoning_effort": "high"},
+    "sonnet": {"model": "gpt-6.1-sol", "reasoning_effort": "medium"},
+    "haiku": {"model": "gpt-6-luna", "reasoning_effort": "low"},
+}
+REVIEWERS = {
+    "fable-review": {"cli": "claude", "model": "claude-fable-5-1"},
+    "astra-review": {"cli": "codex", "model": "gpt-6-astra"},
+    "grok-review": {"cli": "opencode", "model": "openrouter/x-ai/grok-4.7"},
+    "gemini-review": {"cli": "opencode", "model": "openrouter/google/gemini-4-argon"},
+    "deepseek-review": {"cli": "opencode", "model": "openrouter/deepseek/deepseek-v3.2"},
+}
+OTHER_REVIEWERS = ["grok-review", "gemini-review", "deepseek-review"]
+CODEX_PLAN_REVIEWERS = ["fable-review", *OTHER_REVIEWERS]
+CLAUDE_PLAN_REVIEWERS = ["astra-review", *OTHER_REVIEWERS]
+
+# (runtime, profile) -> (top-level session model, phase overrides, reviewer preset)
+PROFILES = {
+    ("codex", "plan"): ("gpt-6-astra", {"planning": "opus", "discuss": "opus"}, CODEX_PLAN_REVIEWERS),
+    ("claude", "plan"): ("claude-fable-5-1", {"planning": "opus", "discuss": "opus"}, CLAUDE_PLAN_REVIEWERS),
+    ("claude", "exec-opus"): ("claude-opus-5-5", {"execution": "sonnet"}, None),
+    ("claude", "exec-sonnet"): ("claude-sonnet-5-5", {"execution": "haiku"}, None),
+    ("codex", "exec-high"): ("gpt-6-astra", {"execution": "opus"}, None),
+    ("codex", "exec-medium"): ("gpt-6.1-sol", {"execution": "sonnet"}, None),
+    ("codex", "exec-low"): ("gpt-6-luna", {"execution": "haiku"}, None),
+    ("codex", "review-codex-plan"): ("gpt-6-astra", {}, CODEX_PLAN_REVIEWERS),
+    ("claude", "review-codex-plan"): ("claude-fable-5-1", {}, CODEX_PLAN_REVIEWERS),
+    ("codex", "review-claude-plan"): ("gpt-6-astra", {}, CLAUDE_PLAN_REVIEWERS),
+    ("claude", "review-claude-plan"): ("claude-opus-5-5", {}, CLAUDE_PLAN_REVIEWERS),
+}
+
+
+def usage() -> None:
+    print(__doc__.strip(), file=sys.stderr)
+
+
+def project_config() -> Path:
+    for directory in (Path.cwd(), *Path.cwd().parents):
+        path = directory / ".planning" / "config.json"
+        if path.is_file():
+            return path
+    sys.exit("Error: .planning/config.json not found; run in a GSD project.")
+
+
+def load(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.exit(f"Cannot read {path}: {exc}")
+    if not isinstance(data, dict):
+        sys.exit("Error: .planning/config.json must contain a JSON object")
+    return data
+
+
+def save(path: Path, data: dict) -> None:
+    # Atomic replace: avoid partially written JSON when launching several CLIs.
+    content = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    old = path.read_text(encoding="utf-8")
+    if content == old:
+        return
+    fd, filename = tempfile.mkstemp(prefix=".gsd-config-", dir=path.parent)
+    try:
+        os.fchmod(fd, stat.S_IMODE(path.stat().st_mode))
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(filename, path)
+    finally:
+        if os.path.exists(filename):
+            os.unlink(filename)
+
+
+def initialize(data: dict) -> None:
+    # Merge only our policy; keep other GSD settings and additional reviewers.
+    policy = data.setdefault("model_policy", {})
+    policy["provider"] = "generic"
+    policy.setdefault("runtime_tiers", {}).update({
+        "claude": CLAUDE_MODELS,
+        "codex": CODEX_MODELS,
+    })
+    models = data.setdefault("models", {})
+    models.setdefault("planning", "opus")
+    models.setdefault("discuss", "opus")
+    models.setdefault("execution", "sonnet")
+    review = data.setdefault("review", {})
+    review.setdefault("reviewer_instances", {}).update(REVIEWERS)
+    review.setdefault("default_reviewers", CODEX_PLAN_REVIEWERS.copy())
+    review.setdefault("parallel_lanes", False)
+    # Don't pin a project runtime: GSD_RUNTIME is set per launched session.
+    data.pop("runtime", None)
+
+
+def guard_subscription_billing(runtime: str, reviewers: list[str]) -> None:
+    uses_claude = runtime == "claude" or "fable-review" in reviewers
+    uses_codex = runtime == "codex" or "astra-review" in reviewers
+    if uses_claude and os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("Refusing to launch: ANTHROPIC_API_KEY is set; unset it to use Claude Max authentication.")
+    if uses_codex and (os.environ.get("OPENAI_API_KEY") or os.environ.get("CODEX_API_KEY")):
+        sys.exit("Refusing to launch: OPENAI_API_KEY/CODEX_API_KEY is set; unset it to use ChatGPT login.")
+
+
+def main() -> None:
+    if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help", "help"}:
+        usage()
+        sys.exit(0 if len(sys.argv) >= 2 else 2)
+
+    path = project_config()
+    data = load(path)
+    action = sys.argv[1]
+
+    if action == "init":
+        if len(sys.argv) != 2:
+            sys.exit("Usage: gsd-cli init")
+        initialize(data)
+        save(path, data)
+        print(f"Initialized model tiers and five reviewer instances in {path}")
+        return
+
+    if action == "status":
+        if len(sys.argv) != 2:
+            sys.exit("Usage: gsd-cli status")
+        print(json.dumps({
+            "runtime": data.get("runtime", "(environment/marker)"),
+            "models": data.get("models", {}),
+            "runtime_tiers": data.get("model_policy", {}).get("runtime_tiers", {}),
+            "default_reviewers": data.get("review", {}).get("default_reviewers"),
+            "reviewer_instances": data.get("review", {}).get("reviewer_instances", {}),
+        }, indent=2))
+        return
+
+    if len(sys.argv) < 3:
+        usage()
+        sys.exit(2)
+    runtime, profile = sys.argv[1:3]
+    key = (runtime, profile)
+    if key not in PROFILES:
+        usage()
+        sys.exit(f"Unsupported runtime/profile: {runtime}/{profile}")
+
+    session_model, phase_changes, reviewers = PROFILES[key]
+    review = data.get("review", {})
+    if not all(name in review.get("reviewer_instances", {}) for name in REVIEWERS):
+        sys.exit("Missing reviewer setup: run 'gsd-cli init' once first.")
+    if not all(tier in data.get("model_policy", {}).get("runtime_tiers", {}).get(runtime, {})
+               for tier in ("opus", "sonnet", "haiku")):
+        sys.exit("Missing runtime tier setup: run 'gsd-cli init' once first.")
+
+    chosen_reviewers = reviewers if reviewers is not None else review.get("default_reviewers", [])
+    guard_subscription_billing(runtime, chosen_reviewers)
+
+    data.setdefault("models", {}).update(phase_changes)
+    if reviewers is not None:
+        review["default_reviewers"] = reviewers.copy()
+    save(path, data)
+
+    args = sys.argv[3:]
+    if args and args[0] == "--":
+        args = args[1:]
+    env = os.environ.copy()
+    env["GSD_RUNTIME"] = runtime
+    print(f"GSD: {runtime}/{profile} | model={session_model} | reviewers={','.join(chosen_reviewers)}", file=sys.stderr)
+    os.chdir(path.parent.parent)
+    try:
+        os.execvpe(runtime, [runtime, "--model", session_model, *args], env)
+    except FileNotFoundError:
+        sys.exit(f"Cannot find CLI '{runtime}' on PATH")
+
+
+if __name__ == "__main__":
+    main()
