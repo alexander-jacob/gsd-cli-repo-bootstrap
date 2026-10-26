@@ -1,6 +1,6 @@
 # GSD CLI launcher — Astra / Fable / Opus / Sonnet
 
-This launcher explicitly selects `GSD_RUNTIME` for each CLI session, sets its session model with `--model`, and updates a small set of GSD project settings atomically in `.planning/config.json`.
+This launcher explicitly selects `GSD_RUNTIME` for each CLI session, sets its session model with `--model` (and, for Codex, its reasoning effort with `-c model_reasoning_effort=…`), and updates a small set of GSD project settings atomically in `.planning/config.json`.
 
 The intended setup is:
 
@@ -126,6 +126,8 @@ From the project root:
 gsd-cli init
 gsd-cli status
 ```
+
+Codex launches add `-c model_reasoning_effort=<effort>` for the session model's tier: Astra `high` (plan, exec-high and both review profiles), Sol `medium` (exec-medium), Luna `low` (exec-low). Without the flag Codex runs Astra at its `medium` default — the effort the orchestrator uses for everything it does inline, including the discuss phase. GSD subagents spawned from that session receive their own model and effort from the GSD profile and are unaffected. Claude Code has no equivalent launch flag, so Claude profiles pass `--model` only.
 
 Every launch also writes `model_overrides` for the launched runtime from the launcher's `AGENT_TIERS` table (mechanical agents such as `gsd-intel-updater` and `gsd-codebase-mapper` on the lower tier, `gsd-nyquist-auditor` and `gsd-pattern-mapper` on the medium tier). See the README for the full table.
 
