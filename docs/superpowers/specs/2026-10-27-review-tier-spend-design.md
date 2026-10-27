@@ -171,8 +171,14 @@ subagent transcript. Codex: 15 rollouts on 2026-10-26, all planning, no
 
 **`gsd-code-fixer` never ran on Fable on machine B.** It was spawned twice,
 both times with `@opus` (Opus 5.5), in the `--fix` session below. The
-orchestrator of that session made zero edits, so every review fix of the
-day (WR-01, WR-02, WR-04, WR-05) was written by the fixer on Opus 5.5.
+orchestrator of that session made zero edits, so every review fix (WR-01,
+WR-02, WR-04 and the WR-05 edits) was written by the fixer on Opus 5.5.
+The second fixer run outlived its orchestrator session: the orchestrator's
+last record is 21:02, the fixer committed WR-04 at 21:11 and was still
+working at 21:14. Its WR-05 edits stayed uncommitted until the next
+morning, when session `e0813a6e` (Opus 5.5, `/gsd-next`, zero edits of its
+own) committed them as `c33d4555` (2026-10-27 06:05 UTC). So `--fix --all`
+did not complete inside its session.
 
 Heaviest Fable session, `090ed207` (`/gsd-execute-phase 08.29`, session
 model Opus 5.5, 16:31 to 20:33 UTC):
@@ -191,10 +197,11 @@ Timeline: seven executor spawns 16:33 to 18:51, then security auditor
 commits 20:32. No `REVIEW.md` edit by the orchestrator (its two edits were
 the executor brief and `SECURITY.md`); no fixer in this session. The
 orchestrator's text at 20:24 says "the verifier ran a second time", but the
-transcript holds one verifier spawn and no `SendMessage` continuation, so
-that sentence describes a re-run inside the one verifier agent, not a second
-Fable spawn. The reviewer and verifier each ran once here, unlike machine A's
-phase 04, because the post-UAT edits did not make the verification stale.
+transcript holds one verifier spawn, resumed twice by the harness (20:22 and
+20:29, same agent id) with no `SendMessage` continuation; the resumed work
+is inside the 60.6k, not a second Fable spawn. The reviewer and verifier
+each ran once here, unlike machine A's phase 04, because nothing was edited
+after UAT: the orchestrator only ran the UAT and docs commits.
 
 Fix session, `1d6a134a` (`/gsd-code-review 08.29 --fix` at 20:35, then
 `--fix --all` at 20:52; session model Opus 5.5):
@@ -207,7 +214,8 @@ Fix session, `1d6a134a` (`/gsd-code-review 08.29 --fix` at 20:35, then
 
 The first `--fix` skipped a new review (planning-only scope since the last
 review) and went straight to the fixer; `--fix --all` ran one deep
-re-review on Fable, then the fixer again. A third session, `53b37cf4`
+re-review on Fable, then the fixer again (see above: that run outlived the
+session). A third session, `53b37cf4`
 (20:34, `--fix`), was `/clear`-ed after four turns and spawned nothing
 (0.9k output tokens).
 
@@ -218,10 +226,10 @@ Output tokens across all sessions of the day:
 | Source | Fable output |
 |---|---|
 | execute-phase verification-tier agents (reviewer, verifier, UI auditor, security auditor) | 198k |
-| four `fable-review` cross-AI plan-review lanes (`/gsd-review` convergence cycles 1 to 4; each a Fable session with no spawns) | 138k |
+| four `fable-review` cross-AI plan-review lanes (`/gsd-review` convergence cycles 1 to 4; each a Fable session with no spawns) | 140k |
 | deep re-review in `--fix --all` | 38k |
-| **Fable total** | **374k** |
-| Opus 5.5 total (executors 763k, fixer 78k, orchestrators 87k) | 928k |
+| **Fable total** | **376k** |
+| Opus 5.5 total, weaver sessions of the day (executors 763k, fixer 78k, orchestrators 75k) | 915k |
 
 (Another 9k of Fable output is the session that ran this replay.) The
 plan-review lanes are a Fable source machine A did not have: the project's
@@ -297,5 +305,5 @@ review depth reduced (option B)? Both machines answered the premise: fixing
 never ran on Fable. Machine B numbers per option: A removes the verifier's
 61k (and the UI auditor's 40k) of the 198k Fable output per phase; B's
 saving is unmeasured; C changes nothing today; D is visibility only. The
-138k of Fable plan-review lanes is outside all four and is a
+140k of Fable plan-review lanes is outside all four and is a
 `review.default_reviewers` choice.
