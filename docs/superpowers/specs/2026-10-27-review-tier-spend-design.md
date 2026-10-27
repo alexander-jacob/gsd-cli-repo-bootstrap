@@ -1,8 +1,8 @@
 # Post-execution review spend by tier: findings and options
 
-Status: analysis in progress. Verified on machine A (Alex's laptop, 2026-10-27).
-Open: replay on machine B, which ran a heavy review/fix day on 2026-10-26.
-Decision pending, see "Open question" at the end.
+Status: analysis complete. Verified on machine A (Alex's laptop, 2026-10-27)
+and replayed on machine B (the heavy review/fix day of 2026-10-26), see
+"Machine B findings". Decision pending, see "Open question" at the end.
 
 ## Intent
 
@@ -113,19 +113,133 @@ have left behind (for example by having every Claude profile, including
 `plan`, write `execution` explicitly, or by keying the written tier words per
 runtime).
 
-## What is not yet known
+## Machine B findings
 
-- Machine B ran a heavy review/fix day on 2026-10-26. Whether `--fix`,
-  `--all` or `--auto` was used there, which session profile the review ran
-  in, what `models.execution` was at the time, and which model the fixer
-  got, is unverified. The plan replays the same analysis there.
-- The launcher commit machine B had that day. If it predates the alias fix
-  (`CLAUDE_MODELS` as Agent-tool aliases), every spawn in those sessions
-  carries `(inherit)` and the day is not representative of the current
-  routing.
-- The cost delta between `code_review_depth` `deep` and `standard` is not
-  measured. Both the project config and `~/.gsd/defaults.json` on machine A
-  set `deep`.
+Replayed on machine B on 2026-10-27 (the machine that ran the heavy day;
+session cwd `/home/alex/projects/munoreqa/weaver`, the project with the
+heavy day). Every number below comes from
+`tools/session_model_usage.py` against machine B's own logs; nothing is
+inferred from usage dashboards.
+
+### Environment (Task 1)
+
+- GSD core `1.19.0`. `~/.gsd/defaults.json` is
+  `{"resolve_model_ids": "omit", "runtime": "opencode"}`: no `model_profile`,
+  no `code_review_depth` there. The project sets `model_profile: adaptive`,
+  `workflow.code_review_depth: deep`, `workflow.code_review: true`.
+- `models` in the project's `.planning/config.json`:
+  `planning: opus, discuss: opus, research: opus, execution: sonnet,
+  verification: opus`. The committed history has exactly one change to
+  `execution`: commit `bf9ef968` (2026-10-26 12:09 UTC) added
+  `"execution": "sonnet"`; the key did not exist before and has not changed
+  since. The only uncommitted change touches `review.default_reviewers` and
+  `review.parallel_lanes`. The cross-runtime leak hypothesis is therefore
+  **not** confirmed on machine B: `execution` was never `opus`. The Codex
+  rollouts of that day were all planning work (planner, phase researcher, UI
+  researcher, UI checker, pattern mapper), no `exec-high` launch.
+- Launcher: `main` is `254be7f` (2026-10-26 17:13 UTC); the installed
+  `~/.local/bin/gsd-cli` has the same timestamp. The alias fix `ca88321`
+  landed at 12:02 UTC, before every session below, and every spawn in those
+  sessions carries an explicit model. The day is representative.
+- Resolver (`session_model_usage.py resolve`, `GSD_RUNTIME=claude`), identical
+  to machine A:
+
+  | Agent | Resolved |
+  |---|---|
+  | gsd-executor | `opus` |
+  | gsd-code-reviewer | `fable` |
+  | gsd-code-fixer | `opus` |
+  | gsd-verifier | `fable` |
+  | gsd-ui-auditor | `fable` |
+  | gsd-security-auditor | `fable` |
+  | gsd-nyquist-auditor | `opus` (project `model_overrides`) |
+  | gsd-debugger | `opus` |
+  | gsd-planner | `fable` |
+  | gsd-phase-researcher | `fable` |
+
+- Catalog: `gsd-code-fixer` has `phaseType: execution` (golden `opus`,
+  balanced and budget `sonnet`).
+
+### Sessions (Tasks 2 to 4)
+
+The tool ran without a traceback on all three scans. Since 2026-10-26
+machine B has 250 Claude Code sessions (`--all`, most of them claude-mem
+observer sessions), of which two spawned GSD agents, both in the weaver
+project; the `--since 2026-10-01` scan reports 0 sessions without a
+subagent transcript. Codex: 15 rollouts on 2026-10-26, all planning, no
+`gsd-code-fixer` or `gsd-code-reviewer` spawn.
+
+**`gsd-code-fixer` never ran on Fable on machine B.** It was spawned twice,
+both times with `@opus` (Opus 5.5), in the `--fix` session below. The
+orchestrator of that session made zero edits, so every review fix of the
+day (WR-01, WR-02, WR-04, WR-05) was written by the fixer on Opus 5.5.
+
+Heaviest Fable session, `090ed207` (`/gsd-execute-phase 08.29`, session
+model Opus 5.5, 16:31 to 20:33 UTC):
+
+| Agent | Model | Runs | Output tokens |
+|---|---|---|---|
+| gsd-executor | Opus 5.5 | 7 | 763.0k |
+| gsd-code-reviewer | Fable | 1 | 62.0k |
+| gsd-verifier | Fable | 1 | 60.6k |
+| orchestrator | Opus 5.5 | 1 | 49.7k |
+| gsd-ui-auditor | Fable | 1 | 40.0k |
+| gsd-security-auditor | Fable | 1 | 35.4k |
+
+Timeline: seven executor spawns 16:33 to 18:51, then security auditor
+19:40, UI auditor 19:48, code reviewer 19:59, verifier 20:13, two docs
+commits 20:32. No `REVIEW.md` edit by the orchestrator (its two edits were
+the executor brief and `SECURITY.md`); no fixer in this session. The
+orchestrator's text at 20:24 says "the verifier ran a second time", but the
+transcript holds one verifier spawn and no `SendMessage` continuation, so
+that sentence describes a re-run inside the one verifier agent, not a second
+Fable spawn. The reviewer and verifier each ran once here, unlike machine A's
+phase 04, because the post-UAT edits did not make the verification stale.
+
+Fix session, `1d6a134a` (`/gsd-code-review 08.29 --fix` at 20:35, then
+`--fix --all` at 20:52; session model Opus 5.5):
+
+| Agent | Model | Runs | Output tokens |
+|---|---|---|---|
+| gsd-code-fixer | Opus 5.5 | 2 | 77.5k |
+| gsd-code-reviewer | Fable | 1 | 38.1k |
+| orchestrator | Opus 5.5 | 1 | 9.2k (0 edits) |
+
+The first `--fix` skipped a new review (planning-only scope since the last
+review) and went straight to the fixer; `--fix --all` ran one deep
+re-review on Fable, then the fixer again. A third session, `53b37cf4`
+(20:34, `--fix`), was `/clear`-ed after four turns and spawned nothing
+(0.9k output tokens).
+
+### Where machine B's Fable output went on 2026-10-26
+
+Output tokens across all sessions of the day:
+
+| Source | Fable output |
+|---|---|
+| execute-phase verification-tier agents (reviewer, verifier, UI auditor, security auditor) | 198k |
+| four `fable-review` cross-AI plan-review lanes (`/gsd-review` convergence cycles 1 to 4; each a Fable session with no spawns) | 138k |
+| deep re-review in `--fix --all` | 38k |
+| **Fable total** | **374k** |
+| Opus 5.5 total (executors 763k, fixer 78k, orchestrators 87k) | 928k |
+
+(Another 9k of Fable output is the session that ran this replay.) The
+plan-review lanes are a Fable source machine A did not have: the project's
+`review.default_reviewers` lists `fable-review`, so each `/gsd-review`
+cycle runs a full Fable session. On this day they cost about as much Fable
+output as the whole execute-phase verification pass. None of the options
+below touches that; it is a `review.default_reviewers` choice.
+
+### Conclusion
+
+The premise (fixing on Fable) does not hold on machine B either. Fable
+spend after execution comes from the verification-tier agents (about 200k
+output tokens for the phase, against 760k of Opus 5.5 execution), plus one
+Fable re-review per `--fix --all`, plus the Fable plan-review lanes before
+execution. Conclusion on machine A: **confirmed on machine B.**
+
+Still unmeasured: the cost delta between `code_review_depth` `deep` and
+`standard`.
 
 ## Options
 
@@ -153,8 +267,8 @@ resolver's answer per key agent (what `tools/session_model_usage.py resolve`
 does), or at least document that command. Pro: ends guessing. Con: one node
 start per agent, so status only, never the launch banner.
 
-**E. Stop the cross-runtime leak in the launcher.** Only relevant if machine
-B confirms the hypothesis above. Make every Claude profile write
+**E. Stop the cross-runtime leak in the launcher.** Not needed by the
+evidence: machine B did not confirm the hypothesis above. Make every Claude profile write
 `models.execution` explicitly (the `plan` profile today does not), or key the
 tier words written to `models` per runtime. Pro: removes a silent route of
 execution work to Fable. Con: touches `PROFILES`, tests, README and the
@@ -179,5 +293,9 @@ that branch and works on it; findings are committed there, not on `main`.
 ## Open question (for the owner)
 
 Should the verifier move off Fable (option A), or stay on Fable with only the
-review depth reduced (option B)? Machine B's logs should answer first whether
-the premise (fixing on Fable) holds anywhere.
+review depth reduced (option B)? Both machines answered the premise: fixing
+never ran on Fable. Machine B numbers per option: A removes the verifier's
+61k (and the UI auditor's 40k) of the 198k Fable output per phase; B's
+saving is unmeasured; C changes nothing today; D is visibility only. The
+138k of Fable plan-review lanes is outside all four and is a
+`review.default_reviewers` choice.
