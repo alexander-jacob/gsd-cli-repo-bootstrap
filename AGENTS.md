@@ -6,6 +6,8 @@
 - `tests/test_gsd_cli.py` contains subprocess-based launcher tests.
 - `examples/gsd-config-example.json` illustrates the configuration merged into a target project's `.planning/config.json`.
 - `README.md` explains workflows; `docs/LAUNCHER.md` provides installation and operation details.
+- `tools/session_model_usage.py` is an offline, standard-library diagnostic: it reports which model each GSD agent was spawned with and its token usage from local Claude Code and Codex transcripts, and runs the real resolver (`resolve` subcommand). Use it before changing routing tables.
+- `docs/superpowers/specs/` holds design and analysis documents; `docs/superpowers/plans/` holds the plans that execute them. A fresh session continuing an analysis starts from the newest spec and its plan.
 - `.github/workflows/tests.yml` runs the test suite on pushes and pull requests.
 
 ## Build, Test, and Development Commands
