@@ -21,6 +21,8 @@ Codex sessions also get -c model_reasoning_effort=<effort> for the session
 model: the profile's SESSION_EFFORTS entry, else the tier effort (Astra high,
 Sol medium, Luna low); Codex otherwise defaults Astra to medium. Claude Code
 has no equivalent launch flag. Subagent effort is resolved by GSD per agent.
+Each launch appends a record to $XDG_STATE_HOME/gsd-cli/launches.jsonl
+(default ~/.local/state/gsd-cli/launches.jsonl); a write failure only warns.
 """
 
 import json
@@ -28,6 +30,7 @@ import os
 import stat
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Claude subagents are spawned through Claude Code's Agent tool, which accepts
@@ -166,16 +169,54 @@ def initialize(data: dict, runtime: str = "claude") -> None:
     data.pop("runtime", None)
 
 
-def session_effort_args(runtime: str, profile: str, session_model: str) -> list[str]:
-    """Codex CLI args pinning the session's reasoning effort (profile, else tier)."""
+def session_effort(runtime: str, profile: str, session_model: str) -> str | None:
+    """Codex session reasoning effort (profile, else tier); None for Claude."""
     if runtime != "codex":
-        return []
+        return None
     if (runtime, profile) in SESSION_EFFORTS:
-        return ["-c", f"model_reasoning_effort={SESSION_EFFORTS[(runtime, profile)]}"]
+        return SESSION_EFFORTS[(runtime, profile)]
     for entry in CODEX_MODELS.values():
         if entry["model"] == session_model:
-            return ["-c", f"model_reasoning_effort={entry['reasoning_effort']}"]
-    return []
+            return entry["reasoning_effort"]
+    return None
+
+
+def session_effort_args(runtime: str, profile: str, session_model: str) -> list[str]:
+    """Codex CLI args pinning the session's reasoning effort (profile, else tier)."""
+    effort = session_effort(runtime, profile, session_model)
+    return ["-c", f"model_reasoning_effort={effort}"] if effort else []
+
+
+def launch_log_path() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "gsd-cli" / "launches.jsonl"
+
+
+def record_launch(root: Path, runtime: str, profile: str, session_model: str,
+                  forwarded: list[str], data: dict) -> None:
+    """Append one launch record; a write failure only warns."""
+    try:
+        defaults = json.loads((Path.home() / ".gsd" / "defaults.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        defaults = None
+    record = {
+        "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "project": str(root),
+        "runtime": runtime,
+        "profile": profile,
+        "session_model": session_model,
+        "session_effort": session_effort(runtime, profile, session_model),
+        "forwarded_args": forwarded,
+        "config": data,
+        "gsd_defaults": defaults,
+    }
+    try:
+        log = launch_log_path()
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except OSError as exc:
+        print(f"GSD: warning: could not write launch log: {exc}", file=sys.stderr)
 
 
 def materialize_agent_tiers(data: dict, runtime: str) -> None:
@@ -262,6 +303,7 @@ def main() -> None:
     if reviewers is not None:
         review["default_reviewers"] = reviewers.copy()
     save(path, data)
+    record_launch(path.parent.parent, runtime, profile, session_model, forwarded_args, data)
 
     env = os.environ.copy()
     env["GSD_RUNTIME"] = runtime

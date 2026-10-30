@@ -46,6 +46,11 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
             self.env.pop(key, None)
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env.get("PATH", "")
         self.env["GSD_TEST_LOG"] = str(self.log)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.env["HOME"] = str(self.home)
+        self.env["XDG_STATE_HOME"] = str(self.root / "state")
+        self.env["TZ"] = "UTC"
 
     def run_launcher(self, *args, cwd=None, env=None):
         return subprocess.run(
@@ -62,6 +67,10 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
 
     def invocation(self):
         return json.loads(self.log.read_text(encoding="utf-8"))
+
+    def launches(self):
+        path = self.root / "state" / "gsd-cli" / "launches.jsonl"
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
     def initialize(self):
         result = self.run_launcher("init")
@@ -146,6 +155,50 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         )
         self.assertEqual(self.config()["models"]["execution"], "opus")
         self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
+
+    def test_launch_appends_one_record(self):
+        self.initialize()
+        result = self.run_launcher("codex", "exec-high", "--", "--foo")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.invocation()["args"],
+            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=medium",
+             "--dangerously-bypass-approvals-and-sandbox", "--foo"],
+        )
+        records = self.launches()
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["runtime"], "codex")
+        self.assertEqual(record["profile"], "exec-high")
+        self.assertEqual(record["session_model"], "gpt-6-astra")
+        self.assertEqual(record["session_effort"], "medium")
+        self.assertEqual(record["forwarded_args"], ["--foo"])
+        self.assertEqual(record["project"], str(self.project))
+        self.assertEqual(record["config"], self.config())
+        self.assertRegex(record["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$")
+        self.assertIsNone(record["gsd_defaults"])
+        self.assertEqual(self.run_launcher("codex", "exec-high").returncode, 0)
+        self.assertEqual(len(self.launches()), 2)
+
+    def test_launch_record_includes_gsd_defaults(self):
+        self.initialize()
+        (self.home / ".gsd").mkdir()
+        (self.home / ".gsd" / "defaults.json").write_text('{"model_profile": "quality"}', encoding="utf-8")
+        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
+        self.assertEqual(self.launches()[0]["gsd_defaults"], {"model_profile": "quality"})
+
+    def test_claude_launch_records_no_session_effort(self):
+        self.initialize()
+        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
+        self.assertIsNone(self.launches()[0]["session_effort"])
+
+    def test_launch_log_failure_warns_and_launches(self):
+        self.initialize()
+        (self.root / "state").write_text("not a directory", encoding="utf-8")
+        result = self.run_launcher("claude", "exec-opus")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not write launch log", result.stderr)
+        self.assertEqual(self.invocation()["program"], "claude")
 
     def test_launch_materializes_agent_tiers_per_runtime(self):
         self.initialize()
