@@ -27,9 +27,11 @@ def _assistant(cwd, session_id, moment, model, effort, advisor, entrypoint, tool
 
 
 def claude_session(home, cwd, session_id, start, model, effort, *, agents=(),
-                   entrypoint="cli", prompt="hi", turns=2, advisor=None):
+                   entrypoint="cli", prompt="hi", turns=2, advisor=None, start_hook=None):
     """Write a Claude session log plus subagent logs; each agent is a dict with
-    id, type, requested, model, effort and parent (None or another agent id)."""
+    id, type, requested, model, effort and parent (None or another agent id).
+    start_hook ("startup", "clear", ...) writes a leading SessionStart hook
+    attachment as Claude Code does for interactive sessions."""
     folder = Path(home) / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
     folder.mkdir(parents=True, exist_ok=True)
     efforts = [effort] * turns if isinstance(effort, str) or effort is None else list(effort)
@@ -47,9 +49,19 @@ def claude_session(home, cwd, session_id, start, model, effort, *, agents=(),
     def write(path, records):
         path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
-    records = [{"type": "user", "timestamp": stamp(start), "cwd": str(cwd),
-                "sessionId": session_id, "entrypoint": entrypoint,
-                "message": {"role": "user", "content": prompt}}]
+    records = []
+    if start_hook:
+        records += [
+            {"type": "mode", "mode": "normal", "sessionId": session_id},
+            {"parentUuid": None, "isSidechain": False, "type": "attachment",
+             "timestamp": stamp(start), "cwd": str(cwd), "sessionId": session_id,
+             "entrypoint": entrypoint, "attachment": {
+                 "type": "hook_success", "hookName": f"SessionStart:{start_hook}",
+                 "toolUseID": "hook-1", "hookEvent": "SessionStart", "content": ""}},
+        ]
+    records.append({"type": "user", "timestamp": stamp(start), "cwd": str(cwd),
+                    "sessionId": session_id, "entrypoint": entrypoint,
+                    "message": {"role": "user", "content": prompt}})
     for index, turn_effort in enumerate(efforts):
         moment = start + timedelta(minutes=index + 1)
         records.append(_assistant(cwd, session_id, moment, model, turn_effort, advisor,
@@ -74,16 +86,18 @@ def claude_session(home, cwd, session_id, start, model, effort, *, agents=(),
 
 
 def codex_session(home, cwd, thread_id, start, model, effort, *, parent=None, role=None,
-                  source="cli", spawns=()):
+                  source="cli", spawns=(), created=None):
     """Write a Codex rollout log. A child passes parent (its parent thread id) and
-    role; each spawn is a dict with call_id, thread_id, agent_type, model, effort."""
+    role; each spawn is a dict with call_id, thread_id, agent_type, model, effort.
+    created is the session_meta payload time when the session was opened before
+    its first prompt (Codex writes the rollout only at that prompt)."""
     folder = Path(home) / ".codex" / "sessions" / start.strftime("%Y/%m/%d")
     folder.mkdir(parents=True, exist_ok=True)
     if parent:
         source = {"subagent": {"thread_spawn": {
             "parent_thread_id": parent, "depth": 1, "agent_path": f"/root/{role}",
             "agent_nickname": "Nick", "agent_role": role}}}
-    meta = {"id": thread_id, "cwd": str(cwd), "timestamp": stamp(start), "source": source}
+    meta = {"id": thread_id, "cwd": str(cwd), "timestamp": stamp(created or start), "source": source}
     records = [{"timestamp": stamp(start), "type": "session_meta", "payload": meta}]
     for index in range(2):
         records.append({"timestamp": stamp(start + timedelta(minutes=index + 1)),

@@ -29,8 +29,9 @@ gsd-cli sessions is read-only: it lists the project's three newest Claude and
 Codex sessions with the model and effort each session, subagent and reviewer
 actually ran, and flags subagents that ran another model than requested and
 sessions or agents that differ from what the launching profile (found via the
-launch log) should have given them. --pick lists older sessions; --pick N
-shows the Nth older one (1 = the fourth newest).
+launch log) should have given them. --pick lists older sessions (summary
+lines only, without mismatch marks); --pick N shows the Nth older one
+(1 = the fourth newest).
 """
 
 import json
@@ -137,6 +138,9 @@ class Run:
     launch: dict | None = None
     resumed: bool = False
     marks: list[str] = field(default_factory=list)
+    cleared: bool = False           # Claude session started by /clear in a running CLI
+    agents_from: Path | None = None # Claude log whose subagents are not loaded yet
+    tool_inputs: dict = field(default_factory=dict)
 
 
 REVIEW_PROMPT_PREFIX = "# Cross-AI Plan Review Request"
@@ -224,8 +228,24 @@ def claude_tool_uses(records: list[dict]) -> dict[str, dict]:
     return found
 
 
+def is_review_prompt(prompt: str) -> bool:
+    """Whether a headless prompt is a cross-AI review request; `claude -p -`
+    records the prompt read from stdin behind a leading "-" line."""
+    return prompt.lstrip().removeprefix("-").lstrip().startswith(REVIEW_PROMPT_PREFIX)
+
+
+def started_by_clear(records: list[dict]) -> bool:
+    """Whether the log's first SessionStart hook fired for /clear."""
+    for record in records:
+        attachment = record.get("attachment")
+        if isinstance(attachment, dict) and attachment.get("hookEvent") == "SessionStart":
+            return str(attachment.get("hookName", "")).endswith(":clear")
+    return False
+
+
 def read_claude_runs(root: Path) -> list[Run]:
-    """Top-level Claude sessions and reviewers for root, with agents nested."""
+    """Top-level Claude sessions and reviewers for root; their subagents are
+    loaded later, for the runs actually shown, by load_claude_agents."""
     folder = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root))
     runs = []
     for log in sorted(folder.glob("*.jsonl")):
@@ -235,37 +255,52 @@ def read_claude_runs(root: Path) -> list[Run]:
             continue
         first_prompt = next((prompt_text(r) for r in records if r.get("type") == "user"), "")
         headless = any(r.get("entrypoint") == "sdk-cli" for r in records)
-        kind = "reviewer" if headless and first_prompt.startswith(REVIEW_PROMPT_PREFIX) else "session"
+        kind = "reviewer" if headless and is_review_prompt(first_prompt) else "session"
         session = claude_run(records, kind, log.stem)
         if session is None:
             continue
-        tool_inputs = claude_tool_uses(records)
-        owners = {tool_id: session for tool_id in tool_inputs}
-        agents = []
-        for agent_log in sorted((folder / log.stem / "subagents").glob("agent-*.jsonl")):
-            agent_records = read_jsonl(agent_log)
-            agent = claude_run(agent_records, "agent", agent_log.stem.removeprefix("agent-"))
-            if agent is None:
-                continue
-            try:
-                meta = json.loads(agent_log.with_suffix(".meta.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                meta = {}
-            if not isinstance(meta, dict):
-                meta = {}
-            agent.agent_type = meta.get("agentType")
-            agent.requested_model = meta.get("model")
-            agent.cwd = agent.cwd or session.cwd
-            agents.append((agent, meta.get("toolUseId")))
-            for tool_id, tool_input in claude_tool_uses(agent_records).items():
-                owners[tool_id] = agent
-                tool_inputs[tool_id] = tool_input
-        for agent, tool_id in agents:
-            agent.requested_effort = (tool_inputs.get(tool_id) or {}).get("effort")
-            parent = owners.get(tool_id, session)
-            (session if parent is agent else parent).children.append(agent)
+        session.cleared = started_by_clear(records)
+        session.agents_from = log
+        session.tool_inputs = claude_tool_uses(records)
         runs.append(session)
     return runs
+
+
+def load_claude_agents(run: Run) -> None:
+    """Nest the subagents of run and of every Claude run below it (reviewers),
+    reading each log's subagent folder at most once."""
+    for child in list(run.children):
+        load_claude_agents(child)
+    log, run.agents_from = run.agents_from, None
+    if log is None:
+        return
+    tool_inputs = dict(run.tool_inputs)
+    owners = {tool_id: run for tool_id in tool_inputs}
+    agents = []
+    for agent_log in sorted((log.parent / log.stem / "subagents").glob("agent-*.jsonl")):
+        agent_records = read_jsonl(agent_log)
+        agent = claude_run(agent_records, "agent", agent_log.stem.removeprefix("agent-"))
+        if agent is None:
+            continue
+        try:
+            meta = json.loads(agent_log.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        agent.agent_type = meta.get("agentType")
+        agent.requested_model = meta.get("model")
+        agent.cwd = agent.cwd or run.cwd
+        agents.append((agent, meta.get("toolUseId")))
+        for tool_id, tool_input in claude_tool_uses(agent_records).items():
+            owners[tool_id] = agent
+            tool_inputs[tool_id] = tool_input
+    for agent, tool_id in agents:
+        agent.requested_effort = (tool_inputs.get(tool_id) or {}).get("effort")
+        parent = owners.get(tool_id, run)
+        (run if parent is agent else parent).children.append(agent)
+    if run.kind == "session":
+        run.children.sort(key=lambda child: child.start)
 
 
 def codex_first_record(path: Path) -> dict:
@@ -295,6 +330,10 @@ def read_codex_runs(root: Path) -> list[Run]:
         times = [t for t in (parse_timestamp(r.get("timestamp")) for r in records) if t]
         if not times:
             continue
+        # Codex writes the rollout only at the first prompt; the session_meta
+        # payload keeps the real creation time.
+        created = parse_timestamp(meta.get("timestamp"))
+        start = min(times + [created] if created else times)
         contexts = [r["payload"] for r in records
                     if r.get("type") == "turn_context" and isinstance(r.get("payload"), dict)]
         model, _ = most_common([c.get("model") for c in contexts])
@@ -308,7 +347,7 @@ def read_codex_runs(root: Path) -> list[Run]:
             kind = "agent"
         else:
             kind = "reviewer" if source == "exec" else "session"
-        run = Run("codex", meta["id"], kind, meta["cwd"], min(times), max(times), model, effort,
+        run = Run("codex", meta["id"], kind, meta["cwd"], start, max(times), model, effort,
                   effort_varied=varied, agent_type=spawn.get("agent_role") if spawn else None)
         threads[run.run_id] = (run, parent_id)
         for record in records:
@@ -383,11 +422,21 @@ def link(runs: list[Run], launches: list[dict]) -> list[Run]:
             top.append(reviewer)
     for run in sessions:
         run.children.sort(key=lambda child: child.start)
-    for session in sessions:
+    for session in sorted(sessions, key=lambda run: run.start):
         same = [(time, launch) for time, launch in timed if launch.get("runtime") == session.runtime]
-        matches = [launch for time, launch in same
-                   if time <= session.start and session.start - time <= MATCH_WINDOW]
-        session.launch = matches[-1] if matches else None
+        if session.cleared:
+            # /clear starts a new log inside the launched process: continue the
+            # previous session's launch unless a newer launch came in between.
+            earlier = [s for s in sessions if s.runtime == session.runtime
+                       and s.cwd == session.cwd and s.start < session.start]
+            previous = max(earlier, key=lambda s: s.start) if earlier else None
+            relaunched = previous is None or any(
+                previous.start < time <= session.start for time, _ in same)
+            session.launch = None if relaunched else previous.launch
+        else:
+            matches = [launch for time, launch in same
+                       if time <= session.start and session.start - time <= MATCH_WINDOW]
+            session.launch = matches[-1] if matches else None
         session.resumed = any(session.start < time <= session.end and resumes(launch)
                               for time, launch in same)
     return sorted(top, key=lambda run: run.start, reverse=True)
@@ -556,7 +605,8 @@ def sessions_command(root: Path, args: list[str]) -> None:
                 return
             try:
                 pick = input("Session number: ").strip()
-            except EOFError:
+            except (EOFError, KeyboardInterrupt):
+                print()
                 return
         if not pick.isdigit() or not 1 <= int(pick) <= len(older):
             sys.exit(f"Error: no session {pick}")
@@ -567,6 +617,7 @@ def sessions_command(root: Path, args: list[str]) -> None:
     if shutil.which("node") is None or not resolver.tools.is_file():
         resolver.available = False
     for run in shown:
+        load_claude_agents(run)
         check(run, resolver, run.runtime, run.launch)
         print("\n".join(render(run)))
     if not resolver.available:

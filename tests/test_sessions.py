@@ -7,6 +7,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from session_fixtures import claude_session, codex_session, install_resolver, launch_record
@@ -45,10 +46,16 @@ class SessionsTestCase(unittest.TestCase):
 
 
 class ClaudeReaderTests(SessionsTestCase):
+    def claude_runs(self):
+        runs = self.gsd.read_claude_runs(self.project)
+        for run in runs:
+            self.gsd.load_claude_agents(run)
+        return runs
+
     def test_claude_reader_session_and_agents(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
                        advisor="claude-opus-5-5", agents=[self.agent("a1")])
-        runs = self.gsd.read_claude_runs(self.project)
+        runs = self.claude_runs()
         self.assertEqual(len(runs), 1)
         session = runs[0]
         self.assertEqual((session.kind, session.model, session.effort), ("session", "claude-opus-5-5", "medium"))
@@ -62,34 +69,67 @@ class ClaudeReaderTests(SessionsTestCase):
     def test_claude_reader_nests_sub_subagents(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
                        agents=[self.agent("a1"), self.agent("a2", parent="a1", type="gsd-verifier")])
-        session = self.gsd.read_claude_runs(self.project)[0]
+        session = self.claude_runs()[0]
         self.assertEqual([c.run_id for c in session.children], ["a1"])
         self.assertEqual([c.run_id for c in session.children[0].children], ["a2"])
 
     def test_claude_reader_requested_effort_from_tool_use(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
                        agents=[self.agent("a1", requested_effort="low")])
-        child = self.gsd.read_claude_runs(self.project)[0].children[0]
+        child = self.claude_runs()[0].children[0]
         self.assertEqual(child.requested_effort, "low")
 
     def test_claude_reader_orphan_agent_goes_under_session(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
                        agents=[self.agent("a1"), self.agent("a2", parent="a1", tool_use_id="toolu_missing")])
-        session = self.gsd.read_claude_runs(self.project)[0]
+        session = self.claude_runs()[0]
         self.assertEqual(sorted(c.run_id for c in session.children), ["a1", "a2"])
         self.assertEqual(session.children[0].children, [])
 
     def test_claude_reader_agent_without_requested_model(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
                        agents=[self.agent("a1", requested=None, model="claude-opus-5-5", effort="low")])
-        child = self.gsd.read_claude_runs(self.project)[0].children[0]
+        child = self.claude_runs()[0].children[0]
         self.assertIsNone(child.requested_model)
         self.assertEqual((child.model, child.effort), ("claude-opus-5-5", "low"))
 
     def test_claude_reader_marks_reviewer_runs(self):
         claude_session(self.home, self.project, "r1", START, "claude-fable-5-1", "high",
-                       entrypoint="sdk-cli", prompt="# Cross-AI Plan Review Request\nplan")
+                       entrypoint="sdk-cli", prompt="-\n# Cross-AI Plan Review Request\nplan")
         self.assertEqual(self.gsd.read_claude_runs(self.project)[0].kind, "reviewer")
+
+    def test_review_prompt_detection(self):
+        for prompt in ("-\n# Cross-AI Plan Review Request\n", "# Cross-AI Plan Review Request",
+                       "  -\n\n# Cross-AI Plan Review Request x"):
+            self.assertTrue(self.gsd.is_review_prompt(prompt), prompt)
+        for prompt in ("-\nhello", "Please do a # Cross-AI Plan Review Request", ""):
+            self.assertFalse(self.gsd.is_review_prompt(prompt), prompt)
+
+    def test_claude_reader_review_prompt_needs_headless(self):
+        claude_session(self.home, self.project, "s1", START, "claude-fable-5-1", "high",
+                       prompt="-\n# Cross-AI Plan Review Request\nplan")
+        self.assertEqual(self.gsd.read_claude_runs(self.project)[0].kind, "session")
+
+    def test_claude_reader_flags_sessions_started_by_clear(self):
+        claude_session(self.home, self.project, "plain", START, "claude-opus-5-5", "high")
+        claude_session(self.home, self.project, "fresh", START, "claude-opus-5-5", "high",
+                       start_hook="startup")
+        claude_session(self.home, self.project, "wiped", START, "claude-opus-5-5", "high",
+                       start_hook="clear")
+        cleared = {r.run_id: r.cleared for r in self.gsd.read_claude_runs(self.project)}
+        self.assertEqual(cleared, {"plain": False, "fresh": False, "wiped": True})
+
+    def test_claude_reader_defers_subagent_logs(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1")])
+        with mock.patch.object(self.gsd, "read_jsonl", wraps=self.gsd.read_jsonl) as reader:
+            session = self.gsd.read_claude_runs(self.project)[0]
+            self.assertEqual(session.children, [])
+            self.assertFalse(any("subagents" in str(c.args[0]) for c in reader.call_args_list))
+            self.gsd.load_claude_agents(session)
+            self.gsd.load_claude_agents(session)
+        self.assertEqual([c.run_id for c in session.children], ["a1"])
+        self.assertEqual(sum("subagents" in str(c.args[0]) for c in reader.call_args_list), 1)
 
     def test_claude_reader_effort_varied(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5",
@@ -177,6 +217,17 @@ class CodexReaderTests(SessionsTestCase):
         self.assertEqual([(r.run_id, r.kind) for r in runs], [("child-1", "agent")])
         self.assertEqual([c.run_id for c in runs[0].children], ["grand-1"])
 
+    def test_codex_reader_starts_at_session_creation(self):
+        created = START - timedelta(seconds=150)
+        codex_session(self.home, self.project, "t1", START, "gpt-6-astra", "high", created=created)
+        run = self.gsd.read_codex_runs(self.project)[0]
+        self.assertEqual(run.start, created)
+        launches = [launch_record(self.env["XDG_STATE_HOME"], self.project, "codex", "plan",
+                                  created - timedelta(seconds=4), "gpt-6-astra", "high")]
+        self.gsd.link([run], self.gsd.load_launches(self.project))
+        self.assertEqual(run.launch["profile"], "plan")
+        self.assertEqual(len(launches), 1)
+
     def test_codex_reader_ignores_non_object_first_line(self):
         for name, line in (("a", "[]"), ("b", "null")):
             path = codex_session(self.home, self.project, name, START, "m", "high")
@@ -248,6 +299,43 @@ class LinkTests(SessionsTestCase):
         self.assertEqual(near.launch["runtime"], "claude")
         self.assertIsNone(far.launch)
         self.assertIsNone(orphan.launch)
+
+    def cleared_run(self, run_id, start):
+        run = self.run_(run_id, start=start)
+        run.cleared = True
+        return run
+
+    def test_link_cleared_session_inherits_previous_launch(self):
+        self.launch("claude", START - timedelta(seconds=5))
+        first = self.run_("s1")
+        second = self.cleared_run("s2", START + timedelta(hours=1))
+        third = self.cleared_run("s3", START + timedelta(hours=2))
+        other = self.run_("o1", start=START + timedelta(minutes=90), cwd=self.root / "other")
+        codex = self.run_("x1", runtime="codex", start=START + timedelta(minutes=30))
+        self.gsd.link([third, second, first, other, codex], self.gsd.load_launches(self.project))
+        self.assertEqual(first.launch["time"], "2026-10-01T08:59:55Z")
+        self.assertIs(second.launch, first.launch)
+        self.assertIs(third.launch, first.launch)
+
+    def test_link_cleared_session_stops_at_newer_launch(self):
+        self.launch("claude", START - timedelta(seconds=5))
+        first = self.run_("s1")
+        self.launch("claude", START + timedelta(minutes=40))
+        self.launch("codex", START + timedelta(minutes=70))
+        second = self.cleared_run("s2", START + timedelta(hours=1))
+        lone = self.cleared_run("s3", START - timedelta(hours=5))
+        self.gsd.link([first, second, lone], self.gsd.load_launches(self.project))
+        self.assertIsNotNone(first.launch)
+        self.assertIsNone(second.launch)
+        self.assertIsNone(lone.launch)
+
+    def test_link_late_session_without_clear_gets_no_launch(self):
+        self.launch("claude", START - timedelta(seconds=5))
+        first = self.run_("s1")
+        late = self.run_("s2", start=START + timedelta(hours=1))
+        self.gsd.link([first, late], self.gsd.load_launches(self.project))
+        self.assertIsNotNone(first.launch)
+        self.assertIsNone(late.launch)
 
     def test_load_launches_skips_malformed_lines(self):
         self.launch("claude", START)
@@ -481,6 +569,48 @@ class SessionsCommandTests(SessionsTestCase):
         self.assertIn("profile: unknown", result.stdout)
         self.assertEqual(result.stdout.splitlines()[-1],
                          "note: GSD resolver not available; profile comparison skipped")
+
+    def subagent_reads(self, *args):
+        """Subagent log paths read by an in-process sessions run, and its output."""
+        with mock.patch.object(self.gsd, "read_jsonl", wraps=self.gsd.read_jsonl) as reader, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.gsd.sessions_command(self.project, list(args))
+        paths = [Path(c.args[0]) for c in reader.call_args_list]
+        return {p.parent.parent.name for p in paths if p.parent.name == "subagents"}, out.getvalue()
+
+    def test_sessions_reads_subagents_only_for_shown_runs(self):
+        for n in range(5):
+            claude_session(self.home, self.project, f"c{n}", self.day(n), "claude-opus-5-5", "medium",
+                           agents=[self.agent(f"a{n}")])
+        read, out = self.subagent_reads()
+        self.assertEqual(read, {"c4", "c3", "c2"})
+        self.assertEqual(out.count("gsd-executor"), 3)
+        read, out = self.subagent_reads("--pick")
+        self.assertEqual(read, set())
+        self.assertIn("2) ", out)
+        read, out = self.subagent_reads("--pick", "2")
+        self.assertEqual(read, {"c0"})
+        self.assertIn("gsd-executor", out)
+
+    def test_sessions_loads_subagents_of_nested_reviewer(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium")
+        claude_session(self.home, self.project, "r1", START + timedelta(seconds=30), "claude-fable-5-1",
+                       "high", entrypoint="sdk-cli", prompt="-\n# Cross-AI Plan Review Request\n",
+                       agents=[self.agent("ra", type="Explore")])
+        read, out = self.subagent_reads()
+        self.assertEqual(read, {"r1"})
+        lines = out.splitlines()
+        self.assertTrue(lines[1].startswith("  reviewer fable-review"), lines)
+        self.assertTrue(lines[2].startswith("    Explore"), lines)
+
+    def test_sessions_pick_prompt_interrupted_exits_cleanly(self):
+        self.populate()
+        with mock.patch("sys.stdin") as stdin, mock.patch("builtins.input", side_effect=KeyboardInterrupt), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            stdin.isatty.return_value = True
+            self.gsd.sessions_command(self.project, ["--pick"])
+        self.assertIn("2) ", out.getvalue())
+        self.assertTrue(out.getvalue().endswith("\n"))
 
     def test_sessions_with_no_logs_prints_message(self):
         result = self.sessions()

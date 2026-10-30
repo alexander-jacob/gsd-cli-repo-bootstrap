@@ -184,6 +184,8 @@ gsd-cli sessions --pick         # list older sessions; prompts for a number on a
 gsd-cli sessions --pick 2       # show the 2nd older session (1 = the fourth newest)
 ```
 
+The `--pick` list shows only each older session's summary line; it carries no mismatch marks, since the checks run only for the session you then pick.
+
 Run it in the project or any subdirectory. Sample output:
 
 ```text
@@ -204,7 +206,7 @@ Two kinds of mismatch are flagged with `!`:
 
 Other marks: `overridden at launch` (your forwarded arguments set their own `--model` or `model_reasoning_effort`, so the profile comparison is skipped) and `resumed, profile may differ` (a later launch resumed the session).
 
-To tie a session to its profile, every runtime-profile launch appends one JSON line to `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (default `~/.local/state/gsd-cli/launches.jsonl`): time, project, runtime, profile, session model and effort, forwarded arguments, a snapshot of the project config as written for the launch, and `~/.gsd/defaults.json` if present. `sessions` matches a session to the latest launch of the same project and runtime within 60 seconds before it started. Sessions without a match show `profile: unknown` and skip the profile comparison (requested vs. actual still runs). A failed log write only prints a warning; it never stops the launch.
+To tie a session to its profile, every runtime-profile launch appends one JSON line to `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (default `~/.local/state/gsd-cli/launches.jsonl`): time, project, runtime, profile, session model and effort, forwarded arguments, a snapshot of the project config as written for the launch, and `~/.gsd/defaults.json` if present. The log is created with mode 0600, since it embeds whole configs. `sessions` matches a session to the latest launch of the same project and runtime within 60 seconds before it started (for Codex, the creation time from the rollout's `session_meta`, which can precede the first logged prompt by minutes). A Claude session started by `/clear` inside a running CLI inherits the launch of the previous session of that project, unless a newer launch of the same runtime came in between. Sessions without a match show `profile: unknown` and skip the profile comparison (requested vs. actual still runs). A failed log write only prints a warning; it never stops the launch.
 
 If node or the GSD resolver (`~/.claude/gsd-core/bin/gsd-tools.cjs`) is missing or fails, only requested vs. actual is checked and the output ends with `note: GSD resolver not available; profile comparison skipped`.
 
