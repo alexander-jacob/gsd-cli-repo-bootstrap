@@ -223,6 +223,14 @@ class LinkTests(SessionsTestCase):
         self.assertEqual(other.marks, ["reviewer, unattached"])
         self.assertEqual(session.children, [])
 
+    def test_link_sorts_children_by_start(self):
+        session = self.run_("s1")
+        agent = self.run_("a1", kind="agent", start=START + timedelta(minutes=20), minutes=1)
+        session.children.append(agent)
+        reviewer = self.run_("r1", kind="reviewer", start=START + timedelta(minutes=5), minutes=1)
+        self.gsd.link([session, reviewer], [])
+        self.assertEqual([c.run_id for c in session.children], ["r1", "a1"])
+
     def test_link_matches_launch_within_window(self):
         self.launch("claude", START - timedelta(seconds=5))
         self.launch("codex", START - timedelta(seconds=2))
@@ -255,7 +263,11 @@ class LinkTests(SessionsTestCase):
         claude = self.run_("s1")
         codex = self.run_("t1", runtime="codex")
         plain = self.run_("s2", start=START + timedelta(hours=1))
-        self.gsd.link([claude, codex, plain], self.gsd.load_launches(self.project))
+        short = self.run_("s3", start=START + timedelta(hours=2))
+        self.launch("claude", short.start + timedelta(minutes=5), forwarded=["-c"])
+        self.launch("codex", plain.start + timedelta(minutes=5), forwarded=["-c", "x=1"])
+        self.gsd.link([claude, codex, plain, short], self.gsd.load_launches(self.project))
+        self.assertTrue(short.resumed)
         self.assertTrue(claude.resumed)
         self.assertTrue(codex.resumed)
         self.assertFalse(plain.resumed)
@@ -382,6 +394,13 @@ class CheckTests(SessionsTestCase):
         self.assertEqual(fable.marks, ["! fable-review expects claude-fable-5-1"])
         self.assertEqual(fine.marks, [])
         self.assertEqual(astra.marks, ["! astra-review expects gpt-6-astra"])
+
+    def test_check_reviewer_uses_first_matching_entry(self):
+        reviewer = self.child(kind="reviewer", agent_type=None, requested=None, model="claude-opus-5-5")
+        extra = {**self.gsd.REVIEWERS, "other-review": {"cli": "claude", "model": "claude-haiku-5-5"}}
+        with mock.patch.dict(self.gsd.REVIEWERS, extra):
+            self.checked(self.session(children=[reviewer]), None)
+        self.assertEqual(reviewer.marks, ["! fable-review expects claude-fable-5-1"])
 
     def test_check_without_resolver_sets_unavailable(self):
         agent = self.child(requested="opus", model="claude-sonnet-5-5")

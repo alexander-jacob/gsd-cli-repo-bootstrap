@@ -356,7 +356,7 @@ def resumes(launch: dict) -> bool:
     args = launch_args(launch)
     if launch.get("runtime") == "codex":
         return args[:1] == ["resume"]
-    return any(arg in ("--resume", "-r", "--continue") for arg in args)
+    return any(arg in ("--resume", "-r", "--continue", "-c") for arg in args)
 
 
 def link(runs: list[Run], launches: list[dict]) -> list[Run]:
@@ -373,6 +373,8 @@ def link(runs: list[Run], launches: list[dict]) -> list[Run]:
         else:
             reviewer.marks.append("reviewer, unattached")
             top.append(reviewer)
+    for run in sessions:
+        run.children.sort(key=lambda child: child.start)
     for session in sessions:
         same = [(time, launch) for time, launch in timed if launch.get("runtime") == session.runtime]
         matches = [launch for time, launch in same
@@ -446,9 +448,10 @@ def overridden_at_launch(launch: dict) -> bool:
 def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> None:
     """Append mismatch marks to run and its descendants."""
     if run.kind == "reviewer":
-        for name, entry in REVIEWERS.items():
-            if entry["cli"] == runtime and run.model and not model_matches(runtime, entry["model"], run.model):
-                run.marks.append(f"! {name} expects {entry['model']}")
+        name = next((name for name, entry in REVIEWERS.items() if entry["cli"] == runtime), None)
+        expected = REVIEWERS[name]["model"] if name else None
+        if expected and run.model and not model_matches(runtime, expected, run.model):
+            run.marks.append(f"! {name} expects {expected}")
         launch = None  # a reviewer's own subagents are not routed by the session's profile
     elif run.kind == "session":
         if launch and overridden_at_launch(launch):
@@ -654,6 +657,7 @@ def main() -> None:
     launcher_args, forwarded_args = args[:separator], args[separator + 1:]
     secure = "--secure" in launcher_args
     args = [arg for arg in launcher_args if arg != "--secure"] + forwarded_args
+    passthrough = args.copy()  # recorded without the bypass flag inserted below
     if key != ("claude", "plan") and not secure:
         flag = ("--dangerously-skip-permissions" if runtime == "claude"
                 else "--dangerously-bypass-approvals-and-sandbox")
@@ -675,7 +679,7 @@ def main() -> None:
     if reviewers is not None:
         review["default_reviewers"] = reviewers.copy()
     save(path, data)
-    record_launch(path.parent.parent, runtime, profile, session_model, forwarded_args, data)
+    record_launch(path.parent.parent, runtime, profile, session_model, passthrough, data)
 
     env = os.environ.copy()
     env["GSD_RUNTIME"] = runtime

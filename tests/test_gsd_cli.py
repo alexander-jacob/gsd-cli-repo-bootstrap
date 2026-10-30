@@ -158,12 +158,12 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
 
     def test_launch_appends_one_record(self):
         self.initialize()
-        result = self.run_launcher("codex", "exec-high", "--", "--foo")
+        result = self.run_launcher("codex", "exec-high", "--search", "--", "--foo")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.invocation()["args"],
             ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=medium",
-             "--dangerously-bypass-approvals-and-sandbox", "--foo"],
+             "--dangerously-bypass-approvals-and-sandbox", "--search", "--foo"],
         )
         records = self.launches()
         self.assertEqual(len(records), 1)
@@ -172,13 +172,21 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(record["profile"], "exec-high")
         self.assertEqual(record["session_model"], "gpt-6-astra")
         self.assertEqual(record["session_effort"], "medium")
-        self.assertEqual(record["forwarded_args"], ["--foo"])
+        self.assertEqual(record["forwarded_args"], ["--search", "--foo"])
         self.assertEqual(record["project"], str(self.project))
         self.assertEqual(record["config"], self.config())
         self.assertRegex(record["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$")
         self.assertIsNone(record["gsd_defaults"])
         self.assertEqual(self.run_launcher("codex", "exec-high").returncode, 0)
         self.assertEqual(len(self.launches()), 2)
+
+    def test_launch_record_keeps_pre_separator_args_without_secure(self):
+        self.initialize()
+        result = self.run_launcher("claude", "exec-opus", "--resume", "--secure", "--", "--model", "x")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.invocation()["args"],
+                         ["--model", "claude-opus-5-5", "--resume", "--model", "x"])
+        self.assertEqual(self.launches()[0]["forwarded_args"], ["--resume", "--model", "x"])
 
     def test_launch_record_includes_gsd_defaults(self):
         self.initialize()
