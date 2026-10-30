@@ -27,9 +27,12 @@ Each launch appends a record to $XDG_STATE_HOME/gsd-cli/launches.jsonl
 
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,6 +105,157 @@ PROFILES = {
 SESSION_EFFORTS = {
     ("codex", "exec-high"): "medium",
 }
+
+
+@dataclass
+class Run:
+    """One session, subagent or reviewer run recovered from a runtime's logs."""
+    runtime: str                    # "claude" | "codex"
+    run_id: str
+    kind: str                       # "session" | "agent" | "reviewer"
+    cwd: str
+    start: datetime                 # tz-aware UTC
+    end: datetime
+    model: str | None               # most common actual model
+    effort: str | None              # most common actual effort
+    effort_varied: bool = False
+    advisor: str | None = None
+    agent_type: str | None = None
+    requested_model: str | None = None
+    requested_effort: str | None = None
+    children: list["Run"] = field(default_factory=list)
+    launch: dict | None = None
+    resumed: bool = False
+    marks: list[str] = field(default_factory=list)
+
+
+REVIEW_PROMPT_PREFIX = "# Cross-AI Plan Review Request"
+
+
+def most_common(values: list[str | None]) -> tuple[str | None, bool]:
+    """Most frequent non-None value, and whether more than one distinct value occurred."""
+    counts = Counter(value for value in values if value is not None)
+    if not counts:
+        return None, False
+    return counts.most_common(1)[0][0], len(counts) > 1
+
+
+def parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """Parse a JSON-lines log, skipping blank, truncated or unreadable lines."""
+    records = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return records
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def prompt_text(record: dict) -> str:
+    content = (record.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def claude_run(path: Path, records: list[dict], kind: str, run_id: str) -> Run | None:
+    """Summarise one Claude log file; None when it holds no timestamped records."""
+    times = [t for t in (parse_timestamp(r.get("timestamp")) for r in records) if t]
+    if not times:
+        return None
+    assistants = [
+        r for r in records
+        if r.get("type") == "assistant" and isinstance(r.get("message"), dict)
+    ]
+    models = [
+        a["message"].get("model") for a in assistants
+        if a["message"].get("model") != "<synthetic>"
+    ]
+    model, _ = most_common(models)
+    effort, varied = most_common([a.get("effort") for a in assistants])
+    advisor, _ = most_common([a.get("advisorModel") for a in assistants])
+    cwd = next((r["cwd"] for r in records if isinstance(r.get("cwd"), str)), "")
+    return Run("claude", run_id, kind, cwd, min(times), max(times), model, effort,
+               effort_varied=varied, advisor=advisor)
+
+
+def claude_tool_uses(records: list[dict]) -> dict[str, dict]:
+    """Agent/Task tool_use inputs in a log, keyed by tool_use id."""
+    found = {}
+    for record in records:
+        if record.get("type") != "assistant":
+            continue
+        content = (record.get("message") or {}).get("content")
+        for block in content if isinstance(content, list) else []:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and block.get("name") in ("Agent", "Task")):
+                found[block.get("id")] = block.get("input") or {}
+    return found
+
+
+def read_claude_runs(root: Path) -> list[Run]:
+    """Top-level Claude sessions and reviewers for root, with agents nested."""
+    folder = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(root))
+    runs = []
+    for log in sorted(folder.glob("*.jsonl")):
+        records = read_jsonl(log)
+        first_cwd = next((r["cwd"] for r in records if isinstance(r.get("cwd"), str)), None)
+        if first_cwd != str(root):
+            continue
+        first_prompt = next((prompt_text(r) for r in records if r.get("type") == "user"), "")
+        headless = any(r.get("entrypoint") == "sdk-cli" for r in records)
+        kind = "reviewer" if headless and first_prompt.startswith(REVIEW_PROMPT_PREFIX) else "session"
+        session = claude_run(log, records, kind, log.stem)
+        if session is None:
+            continue
+        tool_inputs = claude_tool_uses(records)
+        owners = {tool_id: session for tool_id in tool_inputs}
+        agents = []
+        for agent_log in sorted((folder / log.stem / "subagents").glob("agent-*.jsonl")):
+            agent_records = read_jsonl(agent_log)
+            agent = claude_run(agent_log, agent_records, "agent", agent_log.stem.removeprefix("agent-"))
+            if agent is None:
+                continue
+            try:
+                meta = json.loads(agent_log.with_suffix(".meta.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            agent.agent_type = meta.get("agentType")
+            agent.requested_model = meta.get("model")
+            agent.cwd = agent.cwd or session.cwd
+            agents.append((agent, meta.get("toolUseId")))
+            for tool_id, tool_input in claude_tool_uses(agent_records).items():
+                owners[tool_id] = agent
+                tool_inputs[tool_id] = tool_input
+        for agent, tool_id in agents:
+            agent.requested_effort = (tool_inputs.get(tool_id) or {}).get("effort")
+            parent = owners.get(tool_id, session)
+            (session if parent is agent else parent).children.append(agent)
+        runs.append(session)
+    return runs
 
 
 def usage() -> None:
