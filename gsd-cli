@@ -23,7 +23,8 @@ model: the profile's SESSION_EFFORTS entry, else the tier effort (Astra high,
 Sol medium, Luna low); Codex otherwise defaults Astra to medium. Claude Code
 has no equivalent launch flag. Subagent effort is resolved by GSD per agent.
 Each launch appends a record to $XDG_STATE_HOME/gsd-cli/launches.jsonl
-(default ~/.local/state/gsd-cli/launches.jsonl); a write failure only warns.
+(default ~/.local/state/gsd-cli/launches.jsonl, mode 0600); a write
+failure only warns.
 gsd-cli sessions is read-only: it lists the project's three newest Claude and
 Codex sessions with the model and effort each session, subagent and reviewer
 actually ran, and flags subagents that ran another model than requested and
@@ -662,10 +663,11 @@ def launch_log_path() -> Path:
 
 def record_launch(root: Path, runtime: str, profile: str, session_model: str,
                   forwarded: list[str], data: dict) -> None:
-    """Append one launch record; a write failure only warns."""
+    """Append one launch record (mode 0600: it embeds whole configs); a failure
+    only warns."""
     try:
         defaults = json.loads((Path.home() / ".gsd" / "defaults.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         defaults = None
     record = {
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -681,9 +683,11 @@ def record_launch(root: Path, runtime: str, profile: str, session_model: str,
     try:
         log = launch_log_path()
         log.parent.mkdir(parents=True, exist_ok=True)
-        with log.open("a", encoding="utf-8") as handle:
+        fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            os.fchmod(fd, 0o600)
             handle.write(json.dumps(record) + "\n")
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         print(f"GSD: warning: could not write launch log: {exc}", file=sys.stderr)
 
 

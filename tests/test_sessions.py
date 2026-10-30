@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import unittest
@@ -529,6 +530,31 @@ class SessionsCommandTests(SessionsTestCase):
             result = self.sessions(*args)
             self.assertEqual(result.returncode, 1, args)
             self.assertIn("Usage: gsd-cli sessions", result.stderr)
+
+
+class LaunchLogTests(SessionsTestCase):
+    def record(self):
+        self.gsd.record_launch(self.project, "claude", "exec-opus", "claude-opus-5-5", [], {})
+
+    def test_launch_log_is_private(self):
+        log = self.gsd.launch_log_path()
+        self.record()
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        log.chmod(0o644)
+        self.record()
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_launch_log_survives_unknown_home(self):
+        with mock.patch.object(self.gsd.Path, "home", side_effect=RuntimeError("no home")):
+            self.record()
+        record = json.loads(self.gsd.launch_log_path().read_text(encoding="utf-8"))
+        self.assertIsNone(record["gsd_defaults"])
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": ""}), \
+                mock.patch.object(self.gsd.Path, "home", side_effect=RuntimeError("no home")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.record()
+        self.assertIn("could not write launch log: no home", err.getvalue())
 
 
 class RenderTests(SessionsTestCase):
