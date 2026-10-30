@@ -173,6 +173,41 @@ Either way the setting applies only to the launched CLI session and keeps the su
 
 The custom launcher supports Codex and Claude profiles; OpenCode runs as an *external reviewer* through GSD. To work interactively inside OpenCode, launch `opencode` directly (assuming GSD was installed for that CLI).
 
+### Checking what a session actually ran
+
+`gsd-cli sessions` is a read-only report on what Claude Code and Codex really did in this project. It reads the runtimes' own session logs (`~/.claude/projects/` and `~/.codex/sessions/`), never writes to them or to the project, and shows the model and reasoning effort of each session, subagent and cross-AI reviewer run. This catches the silent failure where a bad tier entry makes every subagent inherit the session model.
+
+```bash
+gsd-cli sessions                # the three newest sessions of this project
+gsd-cli sessions codex          # only Codex (or: claude)
+gsd-cli sessions --pick         # list older sessions; prompts for a number on a terminal
+gsd-cli sessions --pick 2       # show the 2nd older session (1 = the fourth newest)
+```
+
+Run it in the project or any subdirectory. Sample output:
+
+```text
+claude  2026-10-29 14:05  profile: exec-opus  claude-opus-5-5  medium  advisor claude-fable-5-1
+  gsd-executor  asked sonnet  ran claude-sonnet-5-5/high
+  gsd-verifier  asked sonnet  ran claude-opus-5-5/high  ! asked sonnet, ran claude-opus-5-5  ! profile expects sonnet
+  reviewer fable-review  ran claude-opus-5-5  ! fable-review expects claude-fable-5-1
+  gsd-planner  asked opus  ran claude-opus-5-5/high
+codex   2026-10-28 09:30  profile: plan  gpt-6-astra  high
+```
+
+Each session line shows runtime, start time (local), the launching profile, session model, effort (`<effort> (varied)` if it changed during the session) and the Claude advisor model if one was recorded. Indented lines are subagents (`asked` is what the agent requested, `ran` is what the log recorded) and cross-AI reviewer runs, which are nested under the session that triggered them. A reviewer run that overlaps no session is listed on its own, marked `reviewer, unattached`.
+
+Two kinds of mismatch are flagged with `!`:
+
+- **Requested vs. actual:** `! asked sonnet, ran claude-opus-5-5`. The agent asked for one model and ran on another. Reviewers are compared against the `REVIEWERS` table (`! fable-review expects claude-fable-5-1`).
+- **Profile vs. actual:** `! profile expects sonnet` or `! profile expects effort high`. The session or agent did not get what the launching profile should have given it. Expected agent values come from the real GSD resolver run against the config snapshot recorded at launch, not from the current config or the launcher tables. Claude is compared by model family; Claude session effort is shown but not compared, since Claude Code has no launch flag for it.
+
+Other marks: `overridden at launch` (your forwarded arguments set their own `--model` or `model_reasoning_effort`, so the profile comparison is skipped) and `resumed, profile may differ` (a later launch resumed the session).
+
+To tie a session to its profile, every runtime-profile launch appends one JSON line to `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (default `~/.local/state/gsd-cli/launches.jsonl`): time, project, runtime, profile, session model and effort, forwarded arguments, a snapshot of the project config as written for the launch, and `~/.gsd/defaults.json` if present. `sessions` matches a session to the latest launch of the same project and runtime within 60 seconds before it started. Sessions without a match show `profile: unknown` and skip the profile comparison (requested vs. actual still runs). A failed log write only prints a warning; it never stops the launch.
+
+If node or the GSD resolver (`~/.claude/gsd-core/bin/gsd-tools.cjs`) is missing or fails, only requested vs. actual is checked and the output ends with `note: GSD resolver not available; profile comparison skipped`.
+
 ## 5. Billing safety
 
 Fable uses the locally authenticated Claude CLI (`claude`); Astra uses the locally authenticated Codex (`codex`). The launcher refuses to run when `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `CODEX_API_KEY` might override subscription-backed authentication for a selected runtime or reviewer. Verify `/status` in Claude Code and `codex login status` first. Grok/Gemini/DeepSeek use OpenCode with OpenRouter credentials and incur API charges.
@@ -185,4 +220,5 @@ A CLI executable name or `--model` setting **alone does not guarantee subscripti
 - `exec-*` profiles change `models.execution` and the session model, **not** reviewer defaults.
 - GSD versions that bake subagent model IDs into static Codex/OpenCode agent definitions may require reinstall/sync after changing model configuration. Check the actual resolved agent models before relying on a new mapping.
 - This script does not isolate a project's mutable `models.*` and reviewer defaults between simultaneously active sessions. For truly concurrent workflows, use separate worktrees or independent project configurations.
+- Each runtime-profile launch appends a record to `~/.local/state/gsd-cli/launches.jsonl` (outside the repository and `.planning/`); `gsd-cli sessions` reads it. It is never pruned, and a write failure is only a warning.
 - Never use `--all` for plan review unless you intend to run additional detected reviewers.

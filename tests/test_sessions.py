@@ -416,5 +416,137 @@ class CheckTests(SessionsTestCase):
         self.assertEqual((session.marks, agent.marks), ([], []))
 
 
+class SessionsCommandTests(SessionsTestCase):
+    def day(self, n):
+        return START + timedelta(days=n)
+
+    def populate(self):
+        """Five sessions, one per day: c0 claude, c1 claude, x2 codex, c3, c4 claude."""
+        for n in (0, 1, 3, 4):
+            claude_session(self.home, self.project, f"c{n}", self.day(n), "claude-opus-5-5", "medium")
+        codex_session(self.home, self.project, "x2", self.day(2), "gpt-6-astra", "high")
+
+    def sessions(self, *args, cwd=None):
+        return self.run_launcher("sessions", *args, cwd=cwd)
+
+    def run_launcher(self, *args, cwd=None):
+        return test_gsd_cli.GsdCliTestCase.run_launcher(self, *args, cwd=cwd)
+
+    def test_sessions_shows_three_newest(self):
+        self.populate()
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for n in (4, 3, 2):
+            self.assertIn(self.day(n).strftime("%Y-%m-%d %H:%M"), result.stdout)
+        for n in (1, 0):
+            self.assertNotIn(self.day(n).strftime("%Y-%m-%d %H:%M"), result.stdout)
+
+    def test_sessions_runtime_filter(self):
+        self.populate()
+        result = self.sessions("codex")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gpt-6-astra", result.stdout)
+        self.assertNotIn("claude-opus-5-5", result.stdout)
+        result = self.sessions("claude")
+        self.assertNotIn("gpt-6-astra", result.stdout)
+
+    def test_sessions_pick_number_shows_older(self):
+        self.populate()
+        result = self.sessions("--pick", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.day(0).strftime("%Y-%m-%d %H:%M"), result.stdout)
+        self.assertNotIn(self.day(1).strftime("%Y-%m-%d %H:%M"), result.stdout)
+
+    def test_sessions_pick_bad_number(self):
+        self.populate()
+        result = self.sessions("--pick", "3")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Error: no session 3", result.stderr)
+
+    def test_sessions_pick_without_tty_lists(self):
+        self.populate()
+        result = self.sessions("--pick")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1) ", result.stdout)
+        self.assertIn("2) ", result.stdout)
+        self.assertNotIn("Session number:", result.stdout)
+
+    def test_sessions_reports_marks_and_note(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1", requested="sonnet", model="claude-opus-5-5")])
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("! asked sonnet, ran claude-opus-5-5", result.stdout)
+        self.assertIn("profile: unknown", result.stdout)
+        self.assertEqual(result.stdout.splitlines()[-1],
+                         "note: GSD resolver not available; profile comparison skipped")
+
+    def test_sessions_with_no_logs_prints_message(self):
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         f"No Claude or Codex sessions found for {self.project}.")
+
+    def test_sessions_from_nested_directory(self):
+        self.populate()
+        nested = self.project / "src" / "deep"
+        nested.mkdir(parents=True)
+        result = self.sessions(cwd=nested)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.day(4).strftime("%Y-%m-%d %H:%M"), result.stdout)
+
+    def test_sessions_shows_profile_and_nested_lines(self):
+        install_resolver(self.home, self.bin, {})
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       advisor="claude-opus-5-5", agents=[self.agent("a1")])
+        launch_record(self.root / "state", self.project, "claude", "exec-opus",
+                      START - timedelta(seconds=5), "claude-opus-5-5", None)
+        result = self.sessions()
+        self.assertIn("profile: exec-opus", result.stdout)
+        self.assertIn("advisor claude-opus-5-5", result.stdout)
+        agent_line = next(line for line in result.stdout.splitlines() if "gsd-executor" in line)
+        self.assertTrue(agent_line.startswith("  "))
+        self.assertIn("asked sonnet  ran", agent_line)
+        self.assertIn("ran claude-sonnet-5-5/high", agent_line)
+
+    def test_sessions_writes_nothing(self):
+        self.populate()
+        launch_record(self.root / "state", self.project, "claude", "exec-opus",
+                      self.day(4) - timedelta(seconds=5), "claude-opus-5-5", None)
+        watched = [p for base in (self.home, self.root / "state", self.project)
+                   for p in base.rglob("*") if p.is_file()]
+        before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in watched}
+        names = {p for base in (self.home, self.root / "state", self.project) for p in base.rglob("*")}
+        self.sessions()
+        self.sessions("--pick")
+        after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in watched}
+        self.assertEqual(before, after)
+        self.assertEqual(names, {p for base in (self.home, self.root / "state", self.project)
+                                 for p in base.rglob("*")})
+
+    def test_sessions_rejects_bad_arguments(self):
+        for args in (("bogus",), ("--pick", "x"), ("claude", "codex")):
+            result = self.sessions(*args)
+            self.assertEqual(result.returncode, 1, args)
+            self.assertIn("Usage: gsd-cli sessions", result.stderr)
+
+
+class RenderTests(SessionsTestCase):
+    def test_render_varied_effort_and_indent(self):
+        child = self.gsd.Run("claude", "a", "agent", "/p", START, START, "claude-sonnet-5-5", "high",
+                             agent_type="gsd-executor", requested_model="sonnet", requested_effort="high")
+        reviewer = self.gsd.Run("claude", "r", "reviewer", "/p", START, START, "claude-fable-5-1", None,
+                                agent_type=None)
+        session = self.gsd.Run("claude", "s", "session", "/p", START, START, "claude-opus-5-5", "medium",
+                               effort_varied=True, children=[child, reviewer])
+        lines = self.gsd.render(session)
+        self.assertIn("medium (varied)", lines[0])
+        self.assertIn("profile: unknown", lines[0])
+        self.assertTrue(lines[1].startswith("  gsd-executor"))
+        self.assertTrue(lines[2].startswith("  reviewer"))
+        self.assertIn("ran claude-fable-5-1", lines[2])
+        self.assertTrue(self.gsd.render(session, 1)[0].startswith("  "))
+
+
 if __name__ == "__main__":
     unittest.main()

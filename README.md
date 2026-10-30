@@ -83,7 +83,9 @@ All five are defined under `review.reviewer_instances`, *not* `review.models`. T
 ├── docs/
 │   └── LAUNCHER.md                   # Detailed installation and operation
 ├── tests/
-│   └── test_gsd_cli.py              # Python unittest tests (no dependencies)
+│   ├── session_fixtures.py          # Fake Claude/Codex logs for the sessions tests
+│   ├── test_gsd_cli.py              # Python unittest tests (no dependencies)
+│   └── test_sessions.py             # Tests for gsd-cli sessions
 └── .gitignore
 ```
 
@@ -294,6 +296,41 @@ gsd-cli claude review-codex-plan
 
 Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --phase 1` in Codex or `/gsd-review --phase 1` in Claude Code. GSD external review examines phase plans. A separate GSD code review is not automatically the same four-model reviewer ensemble.
 
+### Checking what a session actually ran
+
+`gsd-cli sessions` is a read-only report on what Claude Code and Codex really did in this project. It reads the runtimes' own session logs (`~/.claude/projects/` and `~/.codex/sessions/`), never writes to them or to the project, and shows the model and reasoning effort of each session, subagent and cross-AI reviewer run. This catches the silent failure where a bad tier entry makes every subagent inherit the session model.
+
+```bash
+gsd-cli sessions                # the three newest sessions of this project
+gsd-cli sessions codex          # only Codex (or: claude)
+gsd-cli sessions --pick         # list older sessions; prompts for a number on a terminal
+gsd-cli sessions --pick 2       # show the 2nd older session (1 = the fourth newest)
+```
+
+Run it in the project or any subdirectory. Sample output:
+
+```text
+claude  2026-10-29 14:05  profile: exec-opus  claude-opus-5-5  medium  advisor claude-fable-5-1
+  gsd-executor  asked sonnet  ran claude-sonnet-5-5/high
+  gsd-verifier  asked sonnet  ran claude-opus-5-5/high  ! asked sonnet, ran claude-opus-5-5  ! profile expects sonnet
+  reviewer fable-review  ran claude-opus-5-5  ! fable-review expects claude-fable-5-1
+  gsd-planner  asked opus  ran claude-opus-5-5/high
+codex   2026-10-28 09:30  profile: plan  gpt-6-astra  high
+```
+
+Each session line shows runtime, start time (local), the launching profile, session model, effort (`<effort> (varied)` if it changed during the session) and the Claude advisor model if one was recorded. Indented lines are subagents (`asked` is what the agent requested, `ran` is what the log recorded) and cross-AI reviewer runs, which are nested under the session that triggered them. A reviewer run that overlaps no session is listed on its own, marked `reviewer, unattached`.
+
+Two kinds of mismatch are flagged with `!`:
+
+- **Requested vs. actual:** `! asked sonnet, ran claude-opus-5-5`. The agent asked for one model and ran on another. Reviewers are compared against the `REVIEWERS` table (`! fable-review expects claude-fable-5-1`).
+- **Profile vs. actual:** `! profile expects sonnet` or `! profile expects effort high`. The session or agent did not get what the launching profile should have given it. Expected agent values come from the real GSD resolver run against the config snapshot recorded at launch, not from the current config or the launcher tables. Claude is compared by model family; Claude session effort is shown but not compared, since Claude Code has no launch flag for it.
+
+Other marks: `overridden at launch` (your forwarded arguments set their own `--model` or `model_reasoning_effort`, so the profile comparison is skipped) and `resumed, profile may differ` (a later launch resumed the session).
+
+To tie a session to its profile, every runtime-profile launch appends one JSON line to `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (default `~/.local/state/gsd-cli/launches.jsonl`): time, project, runtime, profile, session model and effort, forwarded arguments, a snapshot of the project config as written for the launch, and `~/.gsd/defaults.json` if present. `sessions` matches a session to the latest launch of the same project and runtime within 60 seconds before it started. Sessions without a match show `profile: unknown` and skip the profile comparison (requested vs. actual still runs). A failed log write only prints a warning; it never stops the launch.
+
+If node or the GSD resolver (`~/.claude/gsd-core/bin/gsd-tools.cjs`) is missing or fails, only requested vs. actual is checked and the output ends with `note: GSD resolver not available; profile comparison skipped`.
+
 ## How the launcher works
 
 1. Finds `.planning/config.json` in the current directory or an ancestor.
@@ -301,7 +338,8 @@ Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --p
 3. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
 4. Refuses to start if an API-key environment variable would override subscription authentication for the runtime or a selected reviewer.
 5. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
-6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<session effort>` for Codex (profile override, else tier effort), plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
+6. Appends one record to the launch log (`~/.local/state/gsd-cli/launches.jsonl`) so `gsd-cli sessions` can tie the session to its profile; a failed write only warns.
+7. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<session effort>` for Codex (profile override, else tier effort), plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
 
 Example with extra CLI options:
 

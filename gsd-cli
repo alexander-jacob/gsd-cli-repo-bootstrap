@@ -4,6 +4,7 @@
 Commands:
   gsd-cli init [claude|codex]
   gsd-cli status
+  gsd-cli sessions [claude|codex] [--pick [N]]
   gsd-cli codex plan [--secure] [-- CLI_ARGS...]
   gsd-cli claude plan [-- CLI_ARGS...]
   gsd-cli claude exec-opus|exec-sonnet [--secure] [-- CLI_ARGS...]
@@ -23,6 +24,12 @@ Sol medium, Luna low); Codex otherwise defaults Astra to medium. Claude Code
 has no equivalent launch flag. Subagent effort is resolved by GSD per agent.
 Each launch appends a record to $XDG_STATE_HOME/gsd-cli/launches.jsonl
 (default ~/.local/state/gsd-cli/launches.jsonl); a write failure only warns.
+gsd-cli sessions is read-only: it lists the project's three newest Claude and
+Codex sessions with the model and effort each session, subagent and reviewer
+actually ran, and flags subagents that ran another model than requested and
+sessions or agents that differ from what the launching profile (found via the
+launch log) should have given them. --pick lists older sessions; --pick N
+shows the Nth older one (1 = the fourth newest).
 """
 
 import json
@@ -445,10 +452,15 @@ def overridden_at_launch(launch: dict) -> bool:
                or "model_reasoning_effort=" in arg for arg in launch_args(launch))
 
 
+def reviewer_name(runtime: str) -> str | None:
+    """Name of the first REVIEWERS entry run through the given CLI."""
+    return next((name for name, entry in REVIEWERS.items() if entry["cli"] == runtime), None)
+
+
 def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> None:
     """Append mismatch marks to run and its descendants."""
     if run.kind == "reviewer":
-        name = next((name for name, entry in REVIEWERS.items() if entry["cli"] == runtime), None)
+        name = reviewer_name(runtime)
         expected = REVIEWERS[name]["model"] if name else None
         if expected and run.model and not model_matches(runtime, expected, run.model):
             run.marks.append(f"! {name} expects {expected}")
@@ -477,6 +489,87 @@ def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> No
                 run.marks.append(f"! profile expects effort {effort}")
     for child in run.children:
         check(child, resolver, child.runtime, launch)
+
+
+def with_effort(model: str | None, effort: str | None) -> str:
+    return f"{model or '?'}/{effort}" if effort else model or "?"
+
+
+def render(run: Run, depth: int = 0) -> list[str]:
+    """Output lines for a run and, indented two spaces per level, its children."""
+    if run.kind == "session":
+        effort = f"{run.effort} (varied)" if run.effort_varied else run.effort
+        profile = run.launch.get("profile") if run.launch else None
+        parts = [f"{run.runtime:<6}", run.start.astimezone().strftime("%Y-%m-%d %H:%M"),
+                 f"profile: {profile or 'unknown'}", f"{run.model or '?'}", f"{effort or '?'}"]
+        if run.advisor:
+            parts.append(f"advisor {run.advisor}")
+    elif run.kind == "reviewer":
+        parts = [f"reviewer {reviewer_name(run.runtime) or run.model or '?'}",
+                 f"ran {run.model or '?'}"]
+    else:
+        parts = [f"{run.agent_type or 'agent'}",
+                 f"asked {with_effort(run.requested_model, run.requested_effort)}",
+                 f"ran {with_effort(run.model, run.effort)}"]
+    line = "  ".join(parts + run.marks)
+    return ["  " * depth + line] + [row for child in run.children for row in render(child, depth + 1)]
+
+
+SESSIONS_USAGE = "Usage: gsd-cli sessions [claude|codex] [--pick [N]]"
+RECENT_SESSIONS = 3
+
+
+def sessions_command(root: Path, args: list[str]) -> None:
+    """Show the newest sessions of a project; --pick browses older ones."""
+    runtimes: list[str] = []
+    pick: str | None = None
+    picking = False
+    items = iter(args)
+    for arg in items:
+        if arg in ("claude", "codex") and arg not in runtimes:
+            runtimes.append(arg)
+        elif arg == "--pick" and not picking:
+            picking = True
+        elif picking and pick is None and arg.isdigit():
+            pick = arg
+        else:
+            sys.exit(SESSIONS_USAGE)
+    if len(runtimes) > 1:
+        sys.exit(SESSIONS_USAGE)
+    readers = {"claude": read_claude_runs, "codex": read_codex_runs}
+    runs = [run for name in (runtimes or list(readers)) for run in readers[name](root)]
+    top = link(runs, [launch for launch in load_launches(root)
+                      if not runtimes or launch["runtime"] in runtimes])
+    if not top:
+        print(f"No Claude or Codex sessions found for {root}.")
+        return
+    recent, older = top[:RECENT_SESSIONS], top[RECENT_SESSIONS:]
+    if picking:
+        if pick is None:
+            for number, run in enumerate(older, 1):
+                print(f"{number}) {render(run)[0]}")
+            if not older:
+                print("No older sessions.")
+                return
+            if not sys.stdin.isatty():
+                return
+            try:
+                pick = input("Session number: ").strip()
+            except EOFError:
+                return
+        if not pick.isdigit() or not 1 <= int(pick) <= len(older):
+            sys.exit(f"Error: no session {pick}")
+        shown = [older[int(pick) - 1]]
+    else:
+        shown = recent
+    resolver = Resolver()
+    if shutil.which("node") is None or not resolver.tools.is_file():
+        resolver.available = False
+    for run in shown:
+        check(run, resolver, run.runtime, run.launch)
+        print("\n".join(render(run)))
+    if not resolver.available:
+        print("note: GSD resolver not available; profile comparison skipped")
 
 
 def usage() -> None:
@@ -641,6 +734,10 @@ def main() -> None:
             "default_reviewers": data.get("review", {}).get("default_reviewers"),
             "reviewer_instances": data.get("review", {}).get("reviewer_instances", {}),
         }, indent=2))
+        return
+
+    if action == "sessions":
+        sessions_command(path.parent.parent, sys.argv[2:])
         return
 
     if len(sys.argv) < 3:
