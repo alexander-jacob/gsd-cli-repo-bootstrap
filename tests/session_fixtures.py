@@ -68,6 +68,6 @@ def claude_session(home, cwd, session_id, start, model, effort, *, agents=(),
         ])
         (sub / f"agent-{agent['id']}.meta.json").write_text(json.dumps({
             "agentType": agent["type"], "model": agent["requested"],
-            "toolUseId": f"toolu_{agent['id']}", "spawnDepth": 1 if agent["parent"] is None else 2,
+            "toolUseId": agent.get("tool_use_id", f"toolu_{agent['id']}"), "spawnDepth": 1 if agent["parent"] is None else 2,
         }), encoding="utf-8")
     return folder / f"{session_id}.jsonl"

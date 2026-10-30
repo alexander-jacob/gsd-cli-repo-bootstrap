@@ -179,7 +179,7 @@ def prompt_text(record: dict) -> str:
     return ""
 
 
-def claude_run(path: Path, records: list[dict], kind: str, run_id: str) -> Run | None:
+def claude_run(records: list[dict], kind: str, run_id: str) -> Run | None:
     """Summarise one Claude log file; None when it holds no timestamped records."""
     times = [t for t in (parse_timestamp(r.get("timestamp")) for r in records) if t]
     if not times:
@@ -226,7 +226,7 @@ def read_claude_runs(root: Path) -> list[Run]:
         first_prompt = next((prompt_text(r) for r in records if r.get("type") == "user"), "")
         headless = any(r.get("entrypoint") == "sdk-cli" for r in records)
         kind = "reviewer" if headless and first_prompt.startswith(REVIEW_PROMPT_PREFIX) else "session"
-        session = claude_run(log, records, kind, log.stem)
+        session = claude_run(records, kind, log.stem)
         if session is None:
             continue
         tool_inputs = claude_tool_uses(records)
@@ -234,7 +234,7 @@ def read_claude_runs(root: Path) -> list[Run]:
         agents = []
         for agent_log in sorted((folder / log.stem / "subagents").glob("agent-*.jsonl")):
             agent_records = read_jsonl(agent_log)
-            agent = claude_run(agent_log, agent_records, "agent", agent_log.stem.removeprefix("agent-"))
+            agent = claude_run(agent_records, "agent", agent_log.stem.removeprefix("agent-"))
             if agent is None:
                 continue
             try:

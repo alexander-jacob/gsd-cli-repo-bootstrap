@@ -61,6 +61,26 @@ class ClaudeReaderTests(SessionsTestCase):
         self.assertEqual([c.run_id for c in session.children], ["a1"])
         self.assertEqual([c.run_id for c in session.children[0].children], ["a2"])
 
+    def test_claude_reader_requested_effort_from_tool_use(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1", requested_effort="low")])
+        child = self.gsd.read_claude_runs(self.project)[0].children[0]
+        self.assertEqual(child.requested_effort, "low")
+
+    def test_claude_reader_orphan_agent_goes_under_session(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1"), self.agent("a2", parent="a1", tool_use_id="toolu_missing")])
+        session = self.gsd.read_claude_runs(self.project)[0]
+        self.assertEqual(sorted(c.run_id for c in session.children), ["a1", "a2"])
+        self.assertEqual(session.children[0].children, [])
+
+    def test_claude_reader_agent_without_requested_model(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1", requested=None, model="claude-opus-5-5", effort="low")])
+        child = self.gsd.read_claude_runs(self.project)[0].children[0]
+        self.assertIsNone(child.requested_model)
+        self.assertEqual((child.model, child.effort), ("claude-opus-5-5", "low"))
+
     def test_claude_reader_marks_reviewer_runs(self):
         claude_session(self.home, self.project, "r1", START, "claude-fable-5-1", "high",
                        entrypoint="sdk-cli", prompt="# Cross-AI Plan Review Request\nplan")
