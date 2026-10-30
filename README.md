@@ -193,6 +193,37 @@ This is a **configuration example/merge**, not a recommendation to replace an ex
 | `gsd-cli codex review-claude-plan` | Astra | none | Astra + 3 OpenRouter |
 | `gsd-cli claude review-codex-plan` | Fable | none | Fable + 3 OpenRouter |
 
+### What each profile runs
+
+Effective models and efforts, as resolved by GSD (`gsd-tools query resolve-model <agent>`) after the launch, with the launcher's defaults from `init`. **Session** is the top-level CLI you talk to; **Doing** is the subagents that do the profile's work; **Review** is who checks that work: the code reviewer and verifier for execution profiles, the external reviewers for planning and review profiles.
+
+**Claude**
+
+| Profile | Session | Doing | Review |
+|---|---|---|---|
+| `claude plan` | Fable | planner Fable · xhigh, researcher Fable · high, plan checker Fable · low | Astra, Grok, Gemini |
+| `claude exec-opus` | Opus 5.5 | executor Opus · high | code reviewer + verifier Fable · high |
+| `claude exec-sonnet` | Sonnet 5.5 | executor Sonnet · high | code reviewer + verifier Fable · high |
+| `claude review-codex-plan` | Fable | session runs the reviewers | Fable, Grok, Gemini |
+| `claude review-claude-plan` | Opus 5.5 | session runs the reviewers | Astra, Grok, Gemini |
+
+The launcher passes no effort to Claude sessions. Subagent efforts are what GSD resolves and hands to Claude Code; per-agent effort has been observed in Codex session logs only.
+
+**Codex**
+
+| Profile | Session | Doing | Review |
+|---|---|---|---|
+| `codex plan` | Astra · high | planner Astra · xhigh, researcher Astra · high, plan checker Astra · low | Fable, Grok, Gemini |
+| `codex exec-high` | Astra · medium | executor Astra · high | code reviewer + verifier Astra · high ¹ |
+| `codex exec-medium` | Sol · medium | executor Sol · high | code reviewer + verifier Astra · high ¹ |
+| `codex exec-low` | Luna · low | executor Luna · high | code reviewer + verifier Astra · high ¹ |
+| `codex review-codex-plan` | Astra · high | session runs the reviewers | Fable, Grok, Gemini |
+| `codex review-claude-plan` | Astra · high | session runs the reviewers | Astra, Grok, Gemini |
+
+¹ Codex execution profiles do not set `models.verification`; they inherit the project value (`opus` → Astra after `init`). Claude execution profiles pin it to `opus` (Fable).
+
+An execution session only orchestrates (waves, executor summaries, checkpoints); the code is written by executors with their own effort, so `codex exec-high` runs the orchestrator at `medium`.
+
 ### Per-agent tier pins
 
 GSD phase types are broad: `research` also covers the intel updater and codebase mapper, `verification` also covers the test-writing Nyquist auditor. The launcher carries a small `AGENT_TIERS` table (in `gsd-cli`) that pins such mechanical agents to a lower tier, keyed by GSD tier word:
