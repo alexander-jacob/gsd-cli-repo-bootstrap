@@ -140,6 +140,45 @@ class CodexReaderTests(SessionsTestCase):
         self.assertEqual(child.agent_type, "gsd-plan-checker")
         self.assertEqual((child.requested_model, child.requested_effort), (None, None))
 
+    def test_codex_reader_falls_back_to_spawn_arguments(self):
+        codex_session(self.home, self.project, "parent-1", START, "gpt-6-astra", "medium",
+                      spawns=[self.spawn(activity_model=None, activity_effort=None)])
+        codex_session(self.home, self.project, "child-1", START, "gpt-6.1-sol", "high",
+                      parent="parent-1", role="gsd-executor")
+        child = self.gsd.read_codex_runs(self.project)[0].children[0]
+        self.assertEqual((child.requested_model, child.requested_effort), ("gpt-6.1-sol", "high"))
+
+    def test_codex_reader_nests_grandchildren(self):
+        codex_session(self.home, self.project, "parent-1", START, "gpt-6-astra", "medium",
+                      spawns=[self.spawn()])
+        codex_session(self.home, self.project, "child-1", START, "gpt-6.1-sol", "high",
+                      parent="parent-1", role="gsd-executor",
+                      spawns=[self.spawn(call_id="call_2", thread_id="grand-1",
+                                         agent_type="gsd-verifier", model="gpt-6-astra")])
+        codex_session(self.home, self.project, "grand-1", START, "gpt-6-astra", "high",
+                      parent="child-1", role="gsd-verifier")
+        runs = self.gsd.read_codex_runs(self.project)
+        self.assertEqual([r.run_id for r in runs], ["parent-1"])
+        child = runs[0].children[0]
+        self.assertEqual([c.run_id for c in child.children], ["grand-1"])
+        self.assertEqual(child.children[0].requested_model, "gpt-6-astra")
+
+    def test_codex_reader_keeps_orphans_as_top_level_agents(self):
+        codex_session(self.home, self.project, "child-1", START, "gpt-6.1-sol", "high",
+                      parent="missing", role="gsd-executor")
+        codex_session(self.home, self.project, "grand-1", START, "gpt-6.1-sol", "high",
+                      parent="child-1", role="gsd-verifier")
+        runs = self.gsd.read_codex_runs(self.project)
+        self.assertEqual([(r.run_id, r.kind) for r in runs], [("child-1", "agent")])
+        self.assertEqual([c.run_id for c in runs[0].children], ["grand-1"])
+
+    def test_codex_reader_ignores_non_object_first_line(self):
+        for name, line in (("a", "[]"), ("b", "null")):
+            path = codex_session(self.home, self.project, name, START, "m", "high")
+            path.write_text(line + "\n", encoding="utf-8")
+        codex_session(self.home, self.project, "ok", START, "gpt-6-astra", "high")
+        self.assertEqual([r.run_id for r in self.gsd.read_codex_runs(self.project)], ["ok"])
+
     def test_codex_reader_filters_other_projects(self):
         codex_session(self.home, self.project, "mine", START, "gpt-6-astra", "medium")
         codex_session(self.home, self.root / "other", "theirs", START, "gpt-6-astra", "medium")

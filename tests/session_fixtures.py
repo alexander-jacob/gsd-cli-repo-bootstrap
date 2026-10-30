@@ -98,8 +98,9 @@ def codex_session(home, cwd, thread_id, start, model, effort, *, parent=None, ro
             "arguments": json.dumps(arguments), "call_id": spawn["call_id"]}})
         records.append({"timestamp": stamp(moment), "type": "event_msg", "payload": {
             "type": "item_completed", "thread_id": thread_id, "item": {
-                "type": "SubAgentActivity", "model": spawn["model"],
-                "reasoning_effort": spawn["effort"], "id": spawn["call_id"],
+                "type": "SubAgentActivity",
+                "model": spawn.get("activity_model", spawn["model"]),
+                "reasoning_effort": spawn.get("activity_effort", spawn["effort"]), "id": spawn["call_id"],
                 "kind": "started", "agent_thread_id": spawn["thread_id"],
                 "agent_path": f"/root/{spawn['agent_type']}"}}})
     path = folder / f"rollout-{start.strftime('%Y-%m-%dT%H-%M-%S')}-{thread_id}.jsonl"

@@ -265,8 +265,10 @@ def codex_first_record(path: Path) -> dict:
             record = json.loads(handle.readline())
     except (OSError, ValueError):
         return {}
-    payload = record.get("payload") if isinstance(record, dict) else None
-    return payload if record.get("type") == "session_meta" and isinstance(payload, dict) else {}
+    if not isinstance(record, dict) or record.get("type") != "session_meta":
+        return {}
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else {}
 
 
 def read_codex_runs(root: Path) -> list[Run]:
@@ -317,13 +319,14 @@ def read_codex_runs(root: Path) -> list[Run]:
     runs = []
     for run, parent_id in threads.values():
         if parent_id in threads:
+            threads[parent_id][0].children.append(run)
+        if parent_id:
             activity = started.get(run.run_id) or {}
             arguments = spawn_args.get(activity.get("id")) or {}
             run.requested_model = activity.get("model") or arguments.get("model")
             run.requested_effort = activity.get("reasoning_effort") or arguments.get("reasoning_effort")
             run.agent_type = run.agent_type or arguments.get("agent_type")
-            threads[parent_id][0].children.append(run)
-        elif not parent_id:
+        if parent_id not in threads:
             runs.append(run)
     return runs
 
