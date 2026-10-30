@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from session_fixtures import claude_session
+from session_fixtures import claude_session, codex_session
 import test_gsd_cli
 from test_gsd_cli import LAUNCHER
 
@@ -109,6 +109,47 @@ class ClaudeReaderTests(SessionsTestCase):
     def test_most_common(self):
         self.assertEqual(self.gsd.most_common([None, "a", "a", "b"]), ("a", True))
         self.assertEqual(self.gsd.most_common([None]), (None, False))
+
+
+class CodexReaderTests(SessionsTestCase):
+    def spawn(self, **overrides):
+        base = {"call_id": "call_1", "thread_id": "child-1", "agent_type": "gsd-executor",
+                "model": "gpt-6.1-sol", "effort": "high"}
+        return {**base, **overrides}
+
+    def test_codex_reader_links_spawn_to_child(self):
+        codex_session(self.home, self.project, "parent-1", START, "gpt-6-astra", "medium",
+                      spawns=[self.spawn()])
+        codex_session(self.home, self.project, "child-1", START, "gpt-6.1-sol", "high",
+                      parent="parent-1", role="gsd-executor")
+        runs = self.gsd.read_codex_runs(self.project)
+        self.assertEqual([r.run_id for r in runs], ["parent-1"])
+        parent = runs[0]
+        self.assertEqual((parent.kind, parent.model, parent.effort), ("session", "gpt-6-astra", "medium"))
+        child = parent.children[0]
+        self.assertEqual((child.kind, child.agent_type), ("agent", "gsd-executor"))
+        self.assertEqual((child.requested_model, child.requested_effort), ("gpt-6.1-sol", "high"))
+        self.assertEqual((child.model, child.effort), ("gpt-6.1-sol", "high"))
+
+    def test_codex_reader_falls_back_to_parent_thread_id(self):
+        codex_session(self.home, self.project, "parent-1", START, "gpt-6-astra", "medium")
+        codex_session(self.home, self.project, "child-1", START, "gpt-6.1-sol", "high",
+                      parent="parent-1", role="gsd-plan-checker")
+        parent = self.gsd.read_codex_runs(self.project)[0]
+        child = parent.children[0]
+        self.assertEqual(child.agent_type, "gsd-plan-checker")
+        self.assertEqual((child.requested_model, child.requested_effort), (None, None))
+
+    def test_codex_reader_filters_other_projects(self):
+        codex_session(self.home, self.project, "mine", START, "gpt-6-astra", "medium")
+        codex_session(self.home, self.root / "other", "theirs", START, "gpt-6-astra", "medium")
+        self.assertEqual([r.run_id for r in self.gsd.read_codex_runs(self.project)], ["mine"])
+
+    def test_codex_reader_marks_exec_as_reviewer(self):
+        codex_session(self.home, self.project, "rev", START, "gpt-6-astra", "high", source="exec")
+        codex_session(self.home, self.project, "tui", START, "gpt-6-astra", "high", source="vscode")
+        kinds = {r.run_id: r.kind for r in self.gsd.read_codex_runs(self.project)}
+        self.assertEqual(kinds, {"rev": "reviewer", "tui": "session"})
 
 
 if __name__ == "__main__":

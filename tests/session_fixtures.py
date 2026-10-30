@@ -71,3 +71,37 @@ def claude_session(home, cwd, session_id, start, model, effort, *, agents=(),
             "toolUseId": agent.get("tool_use_id", f"toolu_{agent['id']}"), "spawnDepth": 1 if agent["parent"] is None else 2,
         }), encoding="utf-8")
     return folder / f"{session_id}.jsonl"
+
+
+def codex_session(home, cwd, thread_id, start, model, effort, *, parent=None, role=None,
+                  source="cli", spawns=()):
+    """Write a Codex rollout log. A child passes parent (its parent thread id) and
+    role; each spawn is a dict with call_id, thread_id, agent_type, model, effort."""
+    folder = Path(home) / ".codex" / "sessions" / start.strftime("%Y/%m/%d")
+    folder.mkdir(parents=True, exist_ok=True)
+    if parent:
+        source = {"subagent": {"thread_spawn": {
+            "parent_thread_id": parent, "depth": 1, "agent_path": f"/root/{role}",
+            "agent_nickname": "Nick", "agent_role": role}}}
+    meta = {"id": thread_id, "cwd": str(cwd), "timestamp": stamp(start), "source": source}
+    records = [{"timestamp": stamp(start), "type": "session_meta", "payload": meta}]
+    for index in range(2):
+        records.append({"timestamp": stamp(start + timedelta(minutes=index + 1)),
+                        "type": "turn_context",
+                        "payload": {"model": model, "effort": effort, "cwd": str(cwd)}})
+    moment = start + timedelta(minutes=1, seconds=30)
+    for spawn in spawns:
+        arguments = {"agent_type": spawn["agent_type"], "model": spawn["model"],
+                     "reasoning_effort": spawn["effort"]}
+        records.append({"timestamp": stamp(moment), "type": "response_item", "payload": {
+            "type": "function_call", "name": "spawn_agent",
+            "arguments": json.dumps(arguments), "call_id": spawn["call_id"]}})
+        records.append({"timestamp": stamp(moment), "type": "event_msg", "payload": {
+            "type": "item_completed", "thread_id": thread_id, "item": {
+                "type": "SubAgentActivity", "model": spawn["model"],
+                "reasoning_effort": spawn["effort"], "id": spawn["call_id"],
+                "kind": "started", "agent_thread_id": spawn["thread_id"],
+                "agent_path": f"/root/{spawn['agent_type']}"}}})
+    path = folder / f"rollout-{start.strftime('%Y-%m-%dT%H-%M-%S')}-{thread_id}.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return path

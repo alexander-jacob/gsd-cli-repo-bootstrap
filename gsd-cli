@@ -258,6 +258,76 @@ def read_claude_runs(root: Path) -> list[Run]:
     return runs
 
 
+def codex_first_record(path: Path) -> dict:
+    """The session_meta payload on a rollout's first line; {} when unreadable."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            record = json.loads(handle.readline())
+    except (OSError, ValueError):
+        return {}
+    payload = record.get("payload") if isinstance(record, dict) else None
+    return payload if record.get("type") == "session_meta" and isinstance(payload, dict) else {}
+
+
+def read_codex_runs(root: Path) -> list[Run]:
+    """Top-level Codex sessions and reviewers for root, with subagent threads nested."""
+    logs = Path.home() / ".codex" / "sessions"
+    threads: dict[str, tuple[Run, str | None]] = {}
+    started: dict[str, dict] = {}
+    spawn_args: dict[str, dict] = {}
+    for log in sorted(logs.glob("**/rollout-*.jsonl")):
+        meta = codex_first_record(log)
+        if meta.get("cwd") != str(root) or not isinstance(meta.get("id"), str):
+            continue
+        records = read_jsonl(log)
+        times = [t for t in (parse_timestamp(r.get("timestamp")) for r in records) if t]
+        if not times:
+            continue
+        contexts = [r["payload"] for r in records
+                    if r.get("type") == "turn_context" and isinstance(r.get("payload"), dict)]
+        model, _ = most_common([c.get("model") for c in contexts])
+        effort, varied = most_common([c.get("effort") for c in contexts])
+        source = meta.get("source")
+        spawn = {}
+        if isinstance(source, dict):
+            spawn = ((source.get("subagent") or {}).get("thread_spawn") or {})
+        parent_id = spawn.get("parent_thread_id") if spawn else None
+        if parent_id:
+            kind = "agent"
+        else:
+            kind = "reviewer" if source == "exec" else "session"
+        run = Run("codex", meta["id"], kind, meta["cwd"], min(times), max(times), model, effort,
+                  effort_varied=varied, agent_type=spawn.get("agent_role") if spawn else None)
+        threads[run.run_id] = (run, parent_id)
+        for record in records:
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "SubAgentActivity" \
+                    and item.get("kind") == "started" and item.get("agent_thread_id"):
+                started[item["agent_thread_id"]] = item
+            elif payload.get("type") == "function_call" and payload.get("name") == "spawn_agent":
+                try:
+                    arguments = json.loads(payload.get("arguments") or "")
+                except ValueError:
+                    continue
+                if isinstance(arguments, dict):
+                    spawn_args[payload.get("call_id")] = arguments
+    runs = []
+    for run, parent_id in threads.values():
+        if parent_id in threads:
+            activity = started.get(run.run_id) or {}
+            arguments = spawn_args.get(activity.get("id")) or {}
+            run.requested_model = activity.get("model") or arguments.get("model")
+            run.requested_effort = activity.get("reasoning_effort") or arguments.get("reasoning_effort")
+            run.agent_type = run.agent_type or arguments.get("agent_type")
+            threads[parent_id][0].children.append(run)
+        elif not parent_id:
+            runs.append(run)
+    return runs
+
+
 def usage() -> None:
     print(__doc__.strip(), file=sys.stderr)
 
