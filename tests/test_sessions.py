@@ -2,12 +2,13 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from session_fixtures import claude_session, codex_session
+from session_fixtures import claude_session, codex_session, install_resolver, launch_record
 import test_gsd_cli
 from test_gsd_cli import LAUNCHER
 
@@ -28,7 +29,10 @@ class SessionsTestCase(unittest.TestCase):
 
     def setUp(self):
         test_gsd_cli.GsdCliTestCase.setUp(self)
-        patcher = mock.patch.dict(os.environ, {"HOME": str(self.home)})
+        patcher = mock.patch.dict(os.environ, {
+            "HOME": str(self.home), "XDG_STATE_HOME": self.env["XDG_STATE_HOME"],
+            "PATH": self.env["PATH"],
+        })
         patcher.start()
         self.addCleanup(patcher.stop)
         self.gsd = load_launcher()
@@ -189,6 +193,208 @@ class CodexReaderTests(SessionsTestCase):
         codex_session(self.home, self.project, "tui", START, "gpt-6-astra", "high", source="vscode")
         kinds = {r.run_id: r.kind for r in self.gsd.read_codex_runs(self.project)}
         self.assertEqual(kinds, {"rev": "reviewer", "tui": "session"})
+
+
+class LinkTests(SessionsTestCase):
+    def run_(self, run_id, kind="session", runtime="claude", start=START, minutes=30, cwd=None):
+        return self.gsd.Run(runtime, run_id, kind, str(cwd or self.project), start,
+                            start + timedelta(minutes=minutes), "m", "high")
+
+    def launch(self, runtime, time, forwarded=(), project=None):
+        return launch_record(self.env["XDG_STATE_HOME"], project or self.project, runtime,
+                             "exec-opus", time, "claude-opus-5-5", None, forwarded)
+
+    def test_link_nests_reviewer_under_overlapping_session(self):
+        session = self.run_("s1", runtime="codex")
+        reviewer = self.run_("r1", kind="reviewer", start=START + timedelta(minutes=10), minutes=2)
+        top = self.gsd.link([reviewer, session], [])
+        self.assertEqual([r.run_id for r in top], ["s1"])
+        self.assertEqual([c.run_id for c in session.children], ["r1"])
+        self.assertEqual(reviewer.marks, [])
+
+    def test_link_keeps_unattached_reviewer(self):
+        session = self.run_("s1")
+        late = self.run_("r1", kind="reviewer", start=START + timedelta(hours=2))
+        other = self.run_("r2", kind="reviewer", start=START + timedelta(minutes=5),
+                          cwd=self.root / "other")
+        top = self.gsd.link([session, late, other], [])
+        self.assertEqual([r.run_id for r in top], ["r1", "r2", "s1"])
+        self.assertEqual(late.marks, ["reviewer, unattached"])
+        self.assertEqual(other.marks, ["reviewer, unattached"])
+        self.assertEqual(session.children, [])
+
+    def test_link_matches_launch_within_window(self):
+        self.launch("claude", START - timedelta(seconds=5))
+        self.launch("codex", START - timedelta(seconds=2))
+        self.launch("claude", START - timedelta(minutes=10), project=self.root / "other")
+        near = self.run_("near")
+        far = self.run_("far", start=START + timedelta(hours=3))
+        self.launch("claude", far.start - timedelta(minutes=5))
+        orphan = self.run_("orphan", kind="agent", runtime="codex", start=START + timedelta(hours=1))
+        launches = self.gsd.load_launches(self.project)
+        self.assertEqual(len(launches), 3)
+        top = self.gsd.link([near, far, orphan], launches)
+        self.assertEqual([r.run_id for r in top], ["far", "orphan", "near"])
+        self.assertEqual(near.launch["time"], "2026-10-01T08:59:55Z")
+        self.assertEqual(near.launch["runtime"], "claude")
+        self.assertIsNone(far.launch)
+        self.assertIsNone(orphan.launch)
+
+    def test_load_launches_skips_malformed_lines(self):
+        self.launch("claude", START)
+        log = self.gsd.launch_log_path()
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write('{"time": "2026-\n[]\n')
+        self.assertEqual(len(self.gsd.load_launches(self.project)), 1)
+
+    def test_link_marks_resumed(self):
+        self.launch("claude", START - timedelta(seconds=3))
+        self.launch("claude", START + timedelta(minutes=10), forwarded=["--resume", "s1"])
+        self.launch("codex", START + timedelta(minutes=10), forwarded=["resume", "t1"])
+        self.launch("codex", START + timedelta(minutes=12), forwarded=["--search"])
+        claude = self.run_("s1")
+        codex = self.run_("t1", runtime="codex")
+        plain = self.run_("s2", start=START + timedelta(hours=1))
+        self.gsd.link([claude, codex, plain], self.gsd.load_launches(self.project))
+        self.assertTrue(claude.resumed)
+        self.assertTrue(codex.resumed)
+        self.assertFalse(plain.resumed)
+        self.assertEqual(claude.launch["forwarded_args"], [])
+
+    def test_model_matches(self):
+        self.assertTrue(self.gsd.model_matches("claude", "opus", "claude-opus-5-5"))
+        self.assertTrue(self.gsd.model_matches("claude", "claude-opus-5-5", "claude-opus-5-5"))
+        self.assertFalse(self.gsd.model_matches("claude", "opus", "claude-sonnet-5-5"))
+        self.assertFalse(self.gsd.model_matches("codex", "gpt-6-astra", "gpt-6-astra-mini"))
+        self.assertFalse(self.gsd.model_matches("claude", "opus", None))
+
+
+class CheckTests(SessionsTestCase):
+    TABLE = {
+        "claude:gsd-executor": {"model": "opus", "effort": "high"},
+        "codex:gsd-executor": {"model": "gpt-6.1-sol", "effort": "medium"},
+    }
+
+    def session(self, runtime="claude", model="claude-opus-5-5", effort="medium", children=()):
+        run = self.gsd.Run(runtime, "s1", "session", str(self.project), START,
+                           START + timedelta(minutes=30), model, effort)
+        run.children.extend(children)
+        return run
+
+    def child(self, runtime="claude", agent_type="gsd-executor", requested="opus",
+              model="claude-opus-5-5", effort="high", kind="agent"):
+        return self.gsd.Run(runtime, "a1", kind, str(self.project), START, START, model, effort,
+                            agent_type=agent_type, requested_model=requested)
+
+    def launch(self, runtime="claude", session_model="claude-opus-5-5", session_effort=None,
+               forwarded=(), config=None):
+        return launch_record(self.env["XDG_STATE_HOME"], self.project, runtime, "exec-opus",
+                             START - timedelta(seconds=5), session_model, session_effort,
+                             forwarded, config)
+
+    def checked(self, session, launch, runtime="claude"):
+        resolver = self.gsd.Resolver()
+        self.gsd.check(session, resolver, runtime, launch)
+        return resolver
+
+    def test_check_flags_requested_vs_actual(self):
+        wrong = self.child(requested="sonnet", model="claude-opus-5-5")
+        right = self.child(requested="sonnet", model="claude-sonnet-5-5")
+        inherits = self.child(requested=None, model="claude-opus-5-5")
+        nested = self.child(requested="haiku", model="claude-opus-5-5")
+        right.children.append(nested)
+        self.checked(self.session(children=[wrong, right, inherits]), None)
+        self.assertEqual(wrong.marks, ["! asked sonnet, ran claude-opus-5-5"])
+        self.assertEqual(right.marks, [])
+        self.assertEqual(inherits.marks, [])
+        self.assertEqual(nested.marks, ["! asked haiku, ran claude-opus-5-5"])
+
+    def test_check_flags_profile_mismatch(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        agent = self.child(requested="sonnet", model="claude-sonnet-5-5", effort="high")
+        session = self.session(children=[agent])
+        resolver = self.checked(session, self.launch())
+        self.assertTrue(resolver.available)
+        self.assertEqual(agent.marks, ["! profile expects opus"])
+        self.assertEqual(session.marks, [])
+
+    def test_check_flags_profile_effort_and_codex_session(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        agent = self.child(runtime="codex", requested="gpt-6.1-sol", model="gpt-6.1-sol", effort="high")
+        session = self.session(runtime="codex", model="gpt-6-luna", effort="low", children=[agent])
+        self.checked(session, self.launch("codex", "gpt-6-astra", "medium"), "codex")
+        self.assertEqual(agent.marks, ["! profile expects effort medium"])
+        self.assertEqual(session.marks, ["! profile expects gpt-6-astra", "! profile expects effort medium"])
+
+    def test_check_never_compares_claude_session_effort(self):
+        session = self.session(model="claude-sonnet-5-5", effort="low")
+        self.checked(session, self.launch(session_effort="high"))
+        self.assertEqual(session.marks, ["! profile expects claude-opus-5-5"])
+
+    def test_profile_comparison_uses_launch_snapshot(self):
+        install_resolver(self.home, self.bin, {"claude:gsd-executor": {"model": "sonnet", "effort": "high"}})
+        self.config_path.write_text(json.dumps({"model_overrides": {"gsd-executor": "sonnet"}}),
+                                    encoding="utf-8")
+        agent = self.child(requested="opus", model="claude-opus-5-5")
+        launch = self.launch(config={"model_overrides": {"gsd-executor": "opus"}})
+        self.checked(self.session(children=[agent]), launch)
+        self.assertEqual(agent.marks, [])
+
+    def test_resolver_caches_per_launch(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        resolver = self.gsd.Resolver()
+        launch = self.launch()
+        with mock.patch.object(self.gsd.subprocess, "run", wraps=self.gsd.subprocess.run) as run:
+            first = resolver.expected(launch, "gsd-executor")
+            second = resolver.expected(launch, "gsd-executor")
+        self.assertEqual(first, {"model": "opus", "effort": "high"})
+        self.assertEqual(second, first)
+        self.assertEqual(run.call_count, 1)
+
+    def test_check_skips_unknown_agents(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        agent = self.child(agent_type="general-purpose", requested=None, model="claude-haiku-5-5")
+        resolver = self.checked(self.session(children=[agent]), self.launch())
+        self.assertIsNone(resolver.expected(self.launch(), "general-purpose"))
+        self.assertTrue(resolver.available)
+        self.assertEqual(agent.marks, [])
+
+    def test_check_overridden_at_launch(self):
+        for forwarded in (["--model", "claude-sonnet-5-5"], ["-m", "x"],
+                          ["-c", "model_reasoning_effort=low"]):
+            session = self.session(runtime="codex", model="gpt-6-luna", effort="low")
+            self.checked(session, self.launch("codex", "gpt-6-astra", "high", forwarded), "codex")
+            self.assertEqual(session.marks, ["overridden at launch"], forwarded)
+
+    def test_check_marks_resumed(self):
+        session = self.session()
+        session.resumed = True
+        self.checked(session, self.launch())
+        self.assertEqual(session.marks, ["resumed, profile may differ"])
+
+    def test_check_reviewer_model(self):
+        fable = self.child(kind="reviewer", agent_type=None, requested=None, model="claude-opus-5-5")
+        fine = self.child(kind="reviewer", agent_type=None, requested=None, model="claude-fable-5-1")
+        astra = self.child(runtime="codex", kind="reviewer", agent_type=None, requested=None,
+                           model="gpt-6.1-sol")
+        self.checked(self.session(runtime="codex", model="gpt-6-astra", children=[fable, fine, astra]),
+                     None, "codex")
+        self.assertEqual(fable.marks, ["! fable-review expects claude-fable-5-1"])
+        self.assertEqual(fine.marks, [])
+        self.assertEqual(astra.marks, ["! astra-review expects gpt-6-astra"])
+
+    def test_check_without_resolver_sets_unavailable(self):
+        agent = self.child(requested="opus", model="claude-sonnet-5-5")
+        resolver = self.checked(self.session(children=[agent]), self.launch())
+        self.assertFalse(resolver.available)
+        self.assertEqual(agent.marks, ["! asked opus, ran claude-sonnet-5-5"])
+
+    def test_check_never_marks_missing_actual(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        agent = self.child(requested="sonnet", model=None, effort=None)
+        session = self.session(model=None, effort=None, children=[agent])
+        self.checked(session, self.launch())
+        self.assertEqual((session.marks, agent.marks), ([], []))
 
 
 if __name__ == "__main__":

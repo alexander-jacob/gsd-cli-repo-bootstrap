@@ -28,12 +28,14 @@ Each launch appends a record to $XDG_STATE_HOME/gsd-cli/launches.jsonl
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Claude subagents are spawned through Claude Code's Agent tool, which accepts
@@ -329,6 +331,149 @@ def read_codex_runs(root: Path) -> list[Run]:
         if parent_id not in threads:
             runs.append(run)
     return runs
+
+
+# A launch record matches a session that starts at most this long after it.
+MATCH_WINDOW = timedelta(seconds=60)
+
+
+def load_launches(root: Path) -> list[dict]:
+    """Launch records for root, skipping malformed lines."""
+    return [
+        record for record in read_jsonl(launch_log_path())
+        if record.get("project") == str(root) and isinstance(record.get("runtime"), str)
+        and parse_timestamp(record.get("time")) is not None
+    ]
+
+
+def launch_args(launch: dict) -> list[str]:
+    args = launch.get("forwarded_args")
+    return [arg for arg in args if isinstance(arg, str)] if isinstance(args, list) else []
+
+
+def resumes(launch: dict) -> bool:
+    """Whether a launch resumed an earlier session rather than starting one."""
+    args = launch_args(launch)
+    if launch.get("runtime") == "codex":
+        return args[:1] == ["resume"]
+    return any(arg in ("--resume", "-r", "--continue") for arg in args)
+
+
+def link(runs: list[Run], launches: list[dict]) -> list[Run]:
+    """Nest reviewers under their triggering session and attach launch records;
+    returns the top-level runs, newest first."""
+    timed = sorted(((parse_timestamp(launch.get("time")), launch) for launch in launches),
+                   key=lambda pair: pair[0])
+    sessions = [run for run in runs if run.kind == "session"]
+    top = [run for run in runs if run.kind != "reviewer"]
+    for reviewer in (run for run in runs if run.kind == "reviewer"):
+        hosts = [s for s in sessions if s.cwd == reviewer.cwd and s.start <= reviewer.start <= s.end]
+        if hosts:
+            max(hosts, key=lambda s: s.start).children.append(reviewer)
+        else:
+            reviewer.marks.append("reviewer, unattached")
+            top.append(reviewer)
+    for session in sessions:
+        same = [(time, launch) for time, launch in timed if launch.get("runtime") == session.runtime]
+        matches = [launch for time, launch in same
+                   if time <= session.start and session.start - time <= MATCH_WINDOW]
+        session.launch = matches[-1] if matches else None
+        session.resumed = any(session.start < time <= session.end and resumes(launch)
+                              for time, launch in same)
+    return sorted(top, key=lambda run: run.start, reverse=True)
+
+
+def model_matches(runtime: str, expected: str, actual: str | None) -> bool:
+    """Equal IDs, or for Claude an alias matching the actual model's family."""
+    if actual is None:
+        return False
+    return expected == actual or (runtime == "claude" and actual.startswith(f"claude-{expected}-"))
+
+
+class Resolver:
+    """Per-agent expected model and effort from the real GSD resolver, evaluated
+    against a launch's config snapshot in a throwaway project directory."""
+
+    def __init__(self) -> None:
+        self.tools = Path.home() / ".claude" / "gsd-core" / "bin" / "gsd-tools.cjs"
+        self.available = True
+        self.cache: dict[tuple, dict | None] = {}
+
+    def expected(self, launch: dict, agent_type: str) -> dict | None:
+        """{"model", "effort", ...} for agent_type; None when unknown or unavailable."""
+        key = (launch.get("time"), launch.get("runtime"), agent_type)
+        if key not in self.cache:
+            self.cache[key] = self.resolve(launch, agent_type) if self.available else None
+        return self.cache[key]
+
+    def resolve(self, launch: dict, agent_type: str) -> dict | None:
+        node = shutil.which("node")
+        config = launch.get("config")
+        if node is None or not self.tools.is_file():
+            self.available = False
+            return None
+        if not isinstance(config, dict) or not isinstance(launch.get("runtime"), str):
+            return None
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / ".planning").mkdir()
+            (Path(temp) / ".planning" / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            try:
+                result = subprocess.run(
+                    [node, str(self.tools), "query", "resolve-model", agent_type],
+                    cwd=temp, env={**os.environ, "GSD_RUNTIME": launch["runtime"]},
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+                answer = json.loads(result.stdout) if result.returncode == 0 else None
+            except (OSError, subprocess.SubprocessError, ValueError):
+                answer = None
+        if not isinstance(answer, dict):
+            self.available = False
+            return None
+        return None if answer.get("unknown_agent") else answer
+
+
+def expected_value(entry: dict | None, key: str) -> str | None:
+    # "inherit" means the session model, which the session line already checks.
+    value = (entry or {}).get(key)
+    return value if isinstance(value, str) and value and value != "inherit" else None
+
+
+def overridden_at_launch(launch: dict) -> bool:
+    return any(arg in ("--model", "-m") or arg.startswith("--model=")
+               or "model_reasoning_effort=" in arg for arg in launch_args(launch))
+
+
+def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> None:
+    """Append mismatch marks to run and its descendants."""
+    if run.kind == "reviewer":
+        for name, entry in REVIEWERS.items():
+            if entry["cli"] == runtime and run.model and not model_matches(runtime, entry["model"], run.model):
+                run.marks.append(f"! {name} expects {entry['model']}")
+        launch = None  # a reviewer's own subagents are not routed by the session's profile
+    elif run.kind == "session":
+        if launch and overridden_at_launch(launch):
+            run.marks.append("overridden at launch")
+        elif launch:
+            model = expected_value(launch, "session_model")
+            if model and run.model and not model_matches(runtime, model, run.model):
+                run.marks.append(f"! profile expects {model}")
+            effort = expected_value(launch, "session_effort")
+            if runtime == "codex" and effort and run.effort and effort != run.effort:
+                run.marks.append(f"! profile expects effort {effort}")
+        if run.resumed:
+            run.marks.append("resumed, profile may differ")
+    else:
+        if run.requested_model and run.model and not model_matches(runtime, run.requested_model, run.model):
+            run.marks.append(f"! asked {run.requested_model}, ran {run.model}")
+        if launch and run.agent_type and launch.get("runtime") == runtime:
+            entry = resolver.expected(launch, run.agent_type)
+            model, effort = expected_value(entry, "model"), expected_value(entry, "effort")
+            if model and run.model and not model_matches(runtime, model, run.model):
+                run.marks.append(f"! profile expects {model}")
+            if effort and run.effort and effort != run.effort:
+                run.marks.append(f"! profile expects effort {effort}")
+    for child in run.children:
+        check(child, resolver, child.runtime, launch)
 
 
 def usage() -> None:

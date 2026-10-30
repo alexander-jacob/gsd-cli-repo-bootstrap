@@ -106,3 +106,45 @@ def codex_session(home, cwd, thread_id, start, model, effort, *, parent=None, ro
     path = folder / f"rollout-{start.strftime('%Y-%m-%dT%H-%M-%S')}-{thread_id}.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     return path
+
+
+def launch_record(state_home, project, runtime, profile, time, session_model, session_effort,
+                  forwarded=(), config=None):
+    """Append one launch record shaped like record_launch's to the launch log."""
+    log = Path(state_home) / "gsd-cli" / "launches.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "project": str(project),
+        "runtime": runtime, "profile": profile, "session_model": session_model,
+        "session_effort": session_effort, "forwarded_args": list(forwarded),
+        "config": config if config is not None else {}, "gsd_defaults": None,
+    }
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+    return record
+
+
+RESOLVER_STUB = """#!/usr/bin/env python3
+import json, os, sys
+table = json.loads({table!r})
+runtime, agent = os.environ.get("GSD_RUNTIME"), sys.argv[-1]
+try:
+    overrides = json.load(open(".planning/config.json")).get("model_overrides") or {{}}
+except (OSError, ValueError):
+    overrides = {{}}
+entry = table.get(runtime + ":" + agent)
+if agent in overrides:
+    entry = {{"model": overrides[agent], "effort": (entry or {{}}).get("effort")}}
+print(json.dumps(entry or {{"unknown_agent": True}}))
+"""
+
+
+def install_resolver(home, bin_dir, table):
+    """Fake the GSD resolver: an empty gsd-tools.cjs plus a node stub answering
+    resolve-model from the snapshot's model_overrides, else table["runtime:agent"]."""
+    tools = Path(home) / ".claude" / "gsd-core" / "bin" / "gsd-tools.cjs"
+    tools.parent.mkdir(parents=True, exist_ok=True)
+    tools.write_text("", encoding="utf-8")
+    node = Path(bin_dir) / "node"
+    node.write_text(RESOLVER_STUB.format(table=json.dumps(table)), encoding="utf-8")
+    node.chmod(0o755)
