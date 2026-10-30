@@ -17,9 +17,10 @@ model_overrides for the launched runtime; other override keys are kept.
 Every profile except Claude planning skips runtime permission checks by default
 (Codex also disables sandboxing); --secure keeps the CLI's permission prompts
 instead. Claude planning always keeps them.
-Codex sessions also get -c model_reasoning_effort=<tier effort> for the
-session model (Astra high, Sol medium, Luna low); Codex otherwise defaults
-Astra to medium. Claude Code has no equivalent launch flag.
+Codex sessions also get -c model_reasoning_effort=<effort> for the session
+model: the profile's SESSION_EFFORTS entry, else the tier effort (Astra high,
+Sol medium, Luna low); Codex otherwise defaults Astra to medium. Claude Code
+has no equivalent launch flag. Subagent effort is resolved by GSD per agent.
 """
 
 import json
@@ -92,6 +93,12 @@ PROFILES = {
     ("codex", "review-claude-plan"): ("gpt-6-astra", {}, CLAUDE_PLAN_REVIEWERS),
     ("claude", "review-claude-plan"): ("claude-opus-5-5", {}, CLAUDE_PLAN_REVIEWERS),
 }
+# Codex session effort overrides; other profiles use the session model's tier
+# effort. An execution session only orchestrates: GSD resolves executor,
+# reviewer and verifier effort per agent (high), independent of the session.
+SESSION_EFFORTS = {
+    ("codex", "exec-high"): "medium",
+}
 
 
 def usage() -> None:
@@ -159,10 +166,12 @@ def initialize(data: dict, runtime: str = "claude") -> None:
     data.pop("runtime", None)
 
 
-def session_effort_args(runtime: str, session_model: str) -> list[str]:
-    """Codex CLI args pinning the reasoning effort of the session model's tier."""
+def session_effort_args(runtime: str, profile: str, session_model: str) -> list[str]:
+    """Codex CLI args pinning the session's reasoning effort (profile, else tier)."""
     if runtime != "codex":
         return []
+    if (runtime, profile) in SESSION_EFFORTS:
+        return ["-c", f"model_reasoning_effort={SESSION_EFFORTS[(runtime, profile)]}"]
     for entry in CODEX_MODELS.values():
         if entry["model"] == session_model:
             return ["-c", f"model_reasoning_effort={entry['reasoning_effort']}"]
@@ -259,7 +268,7 @@ def main() -> None:
     print(f"GSD: {runtime}/{profile} | model={session_model} | reviewers={','.join(chosen_reviewers)}", file=sys.stderr)
     os.chdir(path.parent.parent)
     try:
-        argv = [runtime, "--model", session_model, *session_effort_args(runtime, session_model), *args]
+        argv = [runtime, "--model", session_model, *session_effort_args(runtime, profile, session_model), *args]
         os.execvpe(runtime, argv, env)
     except FileNotFoundError:
         sys.exit(f"Cannot find CLI '{runtime}' on PATH")

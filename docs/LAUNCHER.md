@@ -127,7 +127,7 @@ gsd-cli init
 gsd-cli status
 ```
 
-Codex launches add `-c model_reasoning_effort=<effort>` for the session model's tier: Astra `high` (plan, exec-high and both review profiles), Sol `medium` (exec-medium), Luna `low` (exec-low). Without the flag Codex runs Astra at its `medium` default — the effort the orchestrator uses for everything it does inline, including the discuss phase. GSD subagents spawned from that session receive their own model and effort from the GSD profile and are unaffected. Claude Code has no equivalent launch flag, so Claude profiles pass `--model` only.
+Codex launches add `-c model_reasoning_effort=<effort>` for the session: Astra `high` (plan and both review profiles), Astra `medium` (exec-high, a per-profile override in `SESSION_EFFORTS`), Sol `medium` (exec-medium), Luna `low` (exec-low). Without the flag Codex runs Astra at its `medium` default — the effort the orchestrator uses for everything it does inline, including the discuss phase. GSD subagents spawned from that session receive their own model and per-agent effort from GSD (executors `high`) and are unaffected by the session's effort. See the README for the per-profile table. Claude Code has no equivalent launch flag, so Claude profiles pass `--model` only.
 
 Every launch also writes `model_overrides` for the launched runtime from the launcher's `AGENT_TIERS` table (mechanical agents such as `gsd-intel-updater` and `gsd-codebase-mapper` on the lower tier, `gsd-nyquist-auditor` and `gsd-pattern-mapper` on the medium tier). See the README for the full table.
 

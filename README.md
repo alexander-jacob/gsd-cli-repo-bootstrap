@@ -47,7 +47,9 @@ This repository contains a small, Python standard-library-only `gsd-cli` launche
 
 The Claude entries are **Agent-tool aliases**, not full model IDs: Claude Code spawns subagents only by `fable`/`opus`/`sonnet`/`haiku` (each resolving to the latest model of that family). GSD cannot map a full ID such as `claude-opus-5-5` back to an alias; it warns, drops the value, and the subagent silently inherits the session model — so the tier mapping would have no effect.
 
-Codex launches also pass `-c model_reasoning_effort=<effort>` for the session model's tier (Astra `high`, Sol `medium`, Luna `low`); without it Codex runs Astra at its `medium` default, which is what the orchestrator uses for discuss/plan work it does inline. GSD subagents get their own effort from the GSD profile. Claude Code has no equivalent launch flag.
+Codex launches also pass `-c model_reasoning_effort=<effort>` for the session model: the tier's effort (Astra `high`, Sol `medium`, Luna `low`) unless the profile overrides it in `SESSION_EFFORTS` (`codex exec-high` runs its Astra session at `medium`). Without the flag Codex runs Astra at its `medium` default, which is what the orchestrator uses for discuss/plan work it does inline. Claude Code has no equivalent launch flag.
+
+The `reasoning_effort` in the Codex tier entries reaches only the session. GSD resolves each subagent's effort per agent (its `effort` settings), independent of the tier and of the session: executors, code reviewers and verifiers run at `high`, planners at `xhigh`, plan checkers at `low`.
 
 A top-level CLI session model (`--model`) and the GSD subagent tier mappings are **different settings**. The launcher sets both as appropriate for each profile.
 
@@ -268,7 +270,7 @@ Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --p
 3. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
 4. Refuses to start if an API-key environment variable would override subscription authentication for the runtime or a selected reviewer.
 5. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
-6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<tier effort>` for Codex, plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
+6. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<session effort>` for Codex (profile override, else tier effort), plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
 
 Example with extra CLI options:
 

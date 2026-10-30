@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-- `gsd-cli` is the executable Python launcher. It handles configuration discovery, model profiles, reviewer selection, billing guards, and CLI execution. Its data tables drive everything: `CLAUDE_MODELS` / `CODEX_MODELS` (GSD tier → runtime model), `AGENT_TIERS` (per-agent tier pins), `REVIEWERS`, and `PROFILES` (session model, phase-tier overrides, reviewer preset).
+- `gsd-cli` is the executable Python launcher. It handles configuration discovery, model profiles, reviewer selection, billing guards, and CLI execution. Its data tables drive everything: `CLAUDE_MODELS` / `CODEX_MODELS` (GSD tier → runtime model), `AGENT_TIERS` (per-agent tier pins), `SESSION_EFFORTS` (per-profile Codex session effort), `REVIEWERS`, and `PROFILES` (session model, phase-tier overrides, reviewer preset).
 - `tests/test_gsd_cli.py` contains subprocess-based launcher tests.
 - `examples/gsd-config-example.json` illustrates the configuration merged into a target project's `.planning/config.json`.
 - `README.md` explains workflows; `docs/LAUNCHER.md` provides installation and operation details.
@@ -16,12 +16,12 @@ Use Python 3.10+; the launcher requires only the standard library. No build or d
 - `python3 -m unittest discover -s tests -v`: run the full offline test suite, matching CI's command. CI uses Python 3.11.
 - `python3 ./gsd-cli status`: inspect configuration from a directory containing an existing `.planning/config.json`, or one of its descendants.
 
-`init` and runtime profiles modify the target project's configuration. Runtime profiles also start an authenticated external CLI. On every launch the launcher writes `models.<phase_type>` from the profile and materializes `AGENT_TIERS` into `model_overrides` for the launched runtime; Codex launches add `-c model_reasoning_effort=<tier effort>`; every profile except Claude planning adds the runtime's permission-bypass flag unless `--secure` is given.
+`init` and runtime profiles modify the target project's configuration. Runtime profiles also start an authenticated external CLI. On every launch the launcher writes `models.<phase_type>` from the profile and materializes `AGENT_TIERS` into `model_overrides` for the launched runtime; Codex launches add `-c model_reasoning_effort=<effort>` (the profile's `SESSION_EFFORTS` entry, else the session model's tier effort); every profile except Claude planning adds the runtime's permission-bypass flag unless `--secure` is given.
 
 ## Model Routing Invariants
 
 - Claude tier entries in `CLAUDE_MODELS` must be Claude Code Agent-tool aliases (`fable`, `opus`, `sonnet`, `haiku`), never full model IDs. GSD cannot map a full ID back to an alias; it warns, resolves an empty model, and every subagent silently inherits the session model.
-- Codex tier entries are full model IDs with a `reasoning_effort`; GSD passes them to `spawn_agent` verbatim, and the launcher uses the effort for the session model.
+- Codex tier entries are full model IDs with a `reasoning_effort`; GSD passes the model to `spawn_agent` verbatim, and the launcher uses the effort for the session model unless `SESSION_EFFORTS` overrides it for the profile. Subagent effort is resolved by GSD per agent (`resolve-model <agent> --pick effort`), not from the tier entry.
 - `model_overrides` is applied by GSD verbatim and has no per-runtime translation, so never write tier words or runtime-specific IDs into it by hand: keep pins in `AGENT_TIERS` (tier-keyed) and let the launch materialize them. Override keys the launcher does not manage must survive a launch.
 - Session `--model` values in `PROFILES` are CLI arguments and may be full IDs for either runtime.
 - Verify routing against the real resolver, not the tables: `GSD_RUNTIME=<runtime> node ~/.claude/gsd-core/bin/gsd-tools.cjs query resolve-model <agent> --pick model` from inside a GSD project.

@@ -141,7 +141,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.invocation()["args"],
-            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high",
+            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=medium",
              "--dangerously-bypass-approvals-and-sandbox"],
         )
         self.assertEqual(self.config()["models"]["execution"], "opus")
@@ -176,9 +176,12 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
                   "gsd-mempalace-curator"}
         self.assertEqual(set(overrides) - {"gsd-ui-auditor"}, pinned)
 
-    def test_codex_session_effort_follows_tier_and_claude_gets_none(self):
+    def test_codex_session_effort_follows_tier_or_profile_and_claude_gets_none(self):
         self.initialize()
-        for profile, expected in (("exec-medium", "medium"), ("exec-low", "low"), ("plan", "high")):
+        # exec-high overrides Astra's tier effort: the orchestrator coordinates at
+        # medium while GSD gives executors their own (high) effort.
+        for profile, expected in (("exec-high", "medium"), ("exec-medium", "medium"), ("exec-low", "low"),
+                                  ("plan", "high"), ("review-codex-plan", "high")):
             with self.subTest(profile=profile):
                 self.assertEqual(self.run_launcher("codex", profile).returncode, 0)
                 self.assertEqual(self.invocation()["args"][2:4], ["-c", f"model_reasoning_effort={expected}"])
