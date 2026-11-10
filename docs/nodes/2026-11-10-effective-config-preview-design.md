@@ -4,7 +4,7 @@ Status: proposed design, builder check complete with no important unanswered que
 
 ## Intent and decisions
 
-The owner wants to inspect the configuration selected by any workflow preset, including the model and effort for GSD roles and external reviewers. They chose **print and exit** and **resolver-backed** output. Existing choices remain: explicit workflow and runtime, optional intelligence level defaulting to medium, arbitrary project-defined workflows, and no automatic workflow invocation.
+The owner wants to inspect the configuration selected by any workflow preset, including the model and effort for GSD roles and external reviewers. They chose **print and exit** and **resolver-backed** output, and requested an **OK / NOT OK check column** to spot differences quickly. Existing choices remain: explicit workflow and runtime, optional intelligence level defaulting to medium, arbitrary project-defined workflows, and no automatic workflow invocation.
 
 Examples:
 
@@ -31,10 +31,18 @@ Print a deterministic, plain-text report followed by indented JSON. No pager, in
 
 1. Project root, workflow, runtime, level, selected installation path/version, and the relevant policy/default/working file paths.
 2. Launcher session model, requested session effort, permission mode, and assembled child argv. These are launch arguments, not observations of a running model.
-3. Phase model settings and an agent matrix, grouped by phase and sorted by agent name. Columns include agent, relevant configured model/effort inputs, GSD-resolved model, requested/resolved effort, runtime-rendered effort and propagation mechanism, installed effort evidence, and discrepancy/unknown notes. Use continuation lines when a table becomes too wide; preserve values without truncation.
+3. Phase model settings and an agent matrix, grouped by phase and sorted by agent name. Columns include agent, relevant configured model/effort inputs, GSD-resolved model, requested/resolved effort, runtime-rendered effort and propagation mechanism, installed effort evidence, **Check**, and discrepancy/unknown notes. Use continuation lines when a table becomes too wide; preserve values without truncation.
 4. Selected external reviewers: instance, adapter, configured model, adapter-specific configured effort or unknown. Include any resolved adapter behavior only when supported by inspected adapter code; never describe configuration alone as provider-observed behavior.
 5. Persistent setting changes that a normal launch would capture, shown as pending changes without saving them. Include resolver warnings, clamping, and relevant drift such as Claude frontmatter differing from policy.
 6. The entire JSON object the launcher would write to `.planning/config.json`, including non-model GSD switches. Label this **launcher effective configuration**; GSD's own built-in defaults and workstream overlays are a separate resolution layer.
+
+The **Check** column compares expectations from the prospective configuration for this command with available resolver/installed-file evidence. Use literal text so checks remain readable without color:
+
+- `OK`: all applicable model/effort comparisons are supported by evidence and match. Documented alias normalization or inheritance may establish equivalence; explain it in the notes rather than comparing raw strings blindly.
+- `NOT OK`: at least one evidenced mismatch exists, including an effort clamp that changes the requested level or installed Claude effort that differs from the intended effort. Name the differing setting and show expected and reported values. A known mismatch takes precedence over another unknown field in the same row.
+- `UNKNOWN`: no known mismatch, but evidence or an unambiguous expectation is missing for an applicable comparison. Never mark a value OK merely because the report echoes the configuration. This third state is the author's proposed handling of uncertainty.
+
+Apply the same labels to session/reviewer comparisons where shown; configuration-only entries are `UNKNOWN` unless independent evidence supports the comparison. An agent's model can be resolver-confirmed even when installed effort remains unknown; explain field-specific results in the notes. These checks concern configuration resolution and installed-file evidence, not observed AI execution. `NOT OK` is a visible finding and does not change the exit-status contract below.
 
 Agent rows cover the selected installation's registered agent catalog plus agent names appearing in model/effort overrides. Unknown custom agents remain visible and are labeled. Do not maintain a second hardcoded role list. All roles are shown because the launcher selects a preset rather than invoking a particular GSD workflow; a row does not imply the workflow will execute that role. Future retries, per-spawn overrides, and workflow-specific dispatch decisions cannot be predicted here.
 
@@ -99,6 +107,6 @@ These paths describe inspected evidence, not a guarantee that every future GSD i
 
 Use the existing Python/Click package and offline unittest fixtures. Add meaningful coverage for both runtimes and custom workflows, medium default, `--secure`, argument boundaries, forwarded override ambiguity, merge/capture parity, missing working/state files, conflicts/journal/lock/input changes, catalog/custom roles, effort evidence/inheritance/clamping, reviewer fields, runtime-specific local/env discovery, workstream context, malformed query output, timeouts, and missing Node/unsupported installations.
 
-Assert preview leaves project contents and mtimes, launch logs, installed agent files, and installation artifacts unchanged; child CLI stubs must never run. Test preview preparation against the same normal-launch configuration on independent fixture copies. Exercise a real installed resolver on a disposable fixture as an integration check, with no AI CLI or paid requests. Run the existing offline suite to protect normal launch behavior. Update README, LAUNCHER, and MIGRATION with concise examples and the meaning of evidence labels.
+Assert preview leaves project contents and mtimes, launch logs, installed agent files, and installation artifacts unchanged; child CLI stubs must never run. Cover check labels for matches, model/effort mismatches, evidenced alias equivalence/inheritance, clamping, missing evidence, and mismatch precedence over unknown fields. Test preview preparation against the same normal-launch configuration on independent fixture copies. Exercise a real installed resolver on a disposable fixture as an integration check, with no AI CLI or paid requests. Run the existing offline suite to protect normal launch behavior. Update README, LAUNCHER, and MIGRATION with concise examples and the meaning of evidence labels.
 
 Module boundaries, batching mechanics, table layout, subprocess limits, and fixture organization remain builder decisions. Any inability to preserve resolver semantics or the read-only guarantee must be surfaced before weakening either contract. This feature does not modify model policy defaults, synchronize installed frontmatter, add a session-history dependency, execute workflows, or alter pricing recommendations.
