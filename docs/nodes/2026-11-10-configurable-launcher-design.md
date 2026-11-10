@@ -16,6 +16,7 @@ The owner selected these behaviors:
 - A complete, tracked project-root `gsd-cli.config.json` owns launcher policy. It is authoritative after initialization, with no implicit built-in policy fallback.
 - `.planning/config.default.json` is tracked; `.planning/config.json` is ignored and remains the file GSD uses.
 - Before each launch, automatically capture changes to persistent GSD settings into the tracked default, excluding launcher-managed fields.
+- Use Click for the CLI and package the application for installation through pipx, replacing the single-file copy installation. The owner accepted this dependency and packaging change.
 
 The owner has chosen this direction, not yet approved the detailed schema or implementation decisions below. Items marked “proposed” are assistant decisions for review.
 
@@ -23,7 +24,7 @@ The owner has chosen this direction, not yet approved the detailed schema or imp
 
 An ordinary model/runtime/workflow switch must leave tracked configuration unchanged. A persistent GSD setting change must become a meaningful default-file diff on the next launch. Changes arriving through Git or direct edits to the default must also reach the local working file without silently losing local edits.
 
-Preserve standard-library-only Python 3.10+ operation, one-file executable installation, atomic individual file replacement, billing guards, argument forwarding, and private launch logging. Keep existing session reporting available without expanding its scope or fixing unrelated reporting defects.
+Preserve Python 3.10+ support, atomic individual file replacement, billing guards, argument forwarding, and private launch logging. Click is the approved CLI dependency; the standard-library-only and single-file-install constraints are superseded by the owner's decision. Keep existing session reporting available without expanding its scope or fixing unrelated reporting defects.
 
 This does not introduce concurrent session isolation, automatic workflow execution, model availability checks, or automatic commits of configuration changes. Independent checkouts/worktrees remain necessary for simultaneous sessions using different settings. It does not claim that the selected models are optimal.
 
@@ -34,6 +35,24 @@ This does not introduce concurrent session isolation, automatic workflow executi
 **Built-in policy with project overrides — rejected.** Smaller project files and centrally refreshed defaults, but the effective policy spans code and configuration and may change after an upgrade.
 
 For capture, the owner selected **automatic capture before launch** over an explicit capture command. Automatic capture reduces manual bookkeeping but requires detecting independent changes to the working file and the tracked default. No extra capture command is required for this scope.
+
+For CLI implementation and distribution, the owner selected **Click with a Python package installed through pipx** over keeping the manual parser and copying a single executable. This adds dependency management and package metadata in return for consistent parsing, help, validation errors, and CLI test support. It also permits separating configuration and synchronization logic from the CLI module.
+
+## Click boundary and package installation
+
+Define a `gsd-cli` console entry point in `pyproject.toml`, backed by a `gsd_cli` package. Declare Click as a runtime dependency using a version range verified to support the stated Python minimum. Select the build backend and exact compatible dependency range during implementation planning; do not depend on an unbounded latest version. Package the complete starter policy as a resource so initialization works outside a source checkout. A module entry point (`python -m gsd_cli`) supports development and subprocess testing.
+
+Use Click for command dispatch, runtime/level choices, the medium default, `--secure`, help, and user-facing errors. Built-in commands remain `init`, `status`, `sessions`, and help. A small custom Click group resolves project-defined workflow names into the same generic launch command; workflow definitions are data, never executable Python plugins. Project lookup and help generation are read-only. Global help and `init --help` must work outside a project and despite malformed project policy; valid project policy may enrich help with available workflows. Errors about invalid policy belong to commands that need it, not to generic help.
+
+Preserve the first literal `--` as the forwarding boundary before Click processes launch arguments. Pass the suffix unchanged as a list of tokens to the child; never reinterpret its `--help`, `--secure`, `-c`, model flags, or positional arguments. Before that boundary, validate only the launcher's documented arguments; unknown options get a clear error directing the user to put child options after `--`. Thus `gsd-cli exec claude -- --help` launches Claude with its help argument, while `gsd-cli exec --help` displays launcher workflow help without synchronization. This intentionally replaces the legacy parser's permissive forwarding before the separator.
+
+Keep policy loading, validation, resolution, synchronization, and launch preparation independent of Click contexts and decorators. Split the package into focused modules where that improves ownership and testing; exact names are left to the builder. The CLI translates domain errors to concise messages and exit codes. Continue to use the existing exec-based child launch and subprocess tests for its observable behavior.
+
+Install from the repository with `pipx install .`; Click and the application live in the pipx-managed environment, and `gsd-cli` is exposed on PATH. Update `task install` and documentation to this model. Document replacement of the old copied `~/.local/bin/gsd-cli`: identify that legacy file and explicitly replace it as part of the installation instructions without overwriting an unrelated executable. Do not require a global/system-Python installation of Click. Document updating an installed local build and check the installed command resolves to the intended package.
+
+Development and CI install the package into a virtual environment before running tests, with an editable install suitable for development. Runtime tests remain offline after dependency installation. Keep `unittest`; Click's `CliRunner` can test help, dispatch, defaults, and error behavior without adding pytest. Test an installed package from a temporary directory outside the repository, including access to its starter-policy resource, to catch packaging errors hidden by source-tree imports.
+
+Reference documentation: [Click custom groups](https://click.palletsprojects.com/en/stable/extending-click/), [Click CLI testing](https://click.palletsprojects.com/en/stable/testing/), and [pipx installation model](https://pipx.pypa.io/stable/).
 
 ## Files and ownership
 
@@ -160,6 +179,7 @@ Record workflow, selected level, effective session model/effort, policy snapshot
 Extend existing offline subprocess fixtures; no paid calls or authentication. Verify:
 
 - Both runtimes, all three levels, omitted level default, custom workflow names, task pins, independent reviewer models, explicit reviewer selection, and exact CLI argv.
+- Click help and error behavior outside projects and with malformed policy, exact forwarding after `--`, rejection of unknown launcher options before it, and no writes during help. Verify the installed console entry point and bundled policy resource outside the checkout.
 - Complete policy authority: changing the project policy affects launch behavior; incomplete policy fails before writes; launcher template updates do not override existing policy.
 - Capture of persistent GSD edits, zero tracked changes on profile switches, transient exclusion, preservation of custom entries, removal of previously managed entries, and fresh checkout initialization.
 - Default-only edits, local-only edits, equal edits, independent edits, conflicting values, deletion versus null, parent deletion conflicts, and interrupted synchronization recovery.
@@ -171,4 +191,4 @@ Run the full offline suite and update README, launcher guide, examples, and repo
 
 ## Remaining builder discretion
 
-The builder chooses internal helper boundaries, JSON validation implementation, lock/journal mechanics, and exact error wording within these requirements. Keep deployment as a single executable and avoid introducing a general plugin framework or new dependency. Implementation planning follows owner approval of this design.
+The builder chooses package module boundaries, JSON validation implementation, build backend, compatible Click dependency range, lock/journal mechanics, and exact error wording within these requirements. Click is approved; avoid unrelated dependencies and a general plugin framework. Implementation planning follows owner approval of this design.

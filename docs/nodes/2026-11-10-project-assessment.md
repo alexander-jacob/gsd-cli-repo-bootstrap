@@ -180,3 +180,7 @@ For example, medium Claude execution can select Opus for the session and executi
 The owner selected complete project configuration over built-in defaults plus project overrides. The project-root `gsd-cli.config.json` is to contain the complete model mappings, workflow definitions, and reviewer policy. A shipped template seeds it; launcher upgrades must not silently replace that policy.
 
 A proposed detailed design is recorded in [Configurable workflow launcher design](2026-11-10-configurable-launcher-design.md). It separates owner decisions from proposed schema, synchronization, migration, and compatibility choices. Implementation has not started.
+
+### Click and package installation selected
+
+The owner prefers Click for CLI maintainability and explicitly accepted replacing the single-file installation with a Python package installed through pipx. This supersedes the earlier standard-library-only and single-file distribution constraints for the redesign. Click handles the CLI boundary; configuration, synchronization, and runtime logic remain ordinary Python modules. The revised design includes package metadata, bundled starter configuration, isolated dependency installation, and tests of the installed entry point and argument-forwarding boundary. The full design is still awaiting approval; acceptance of Click and pipx is not recorded as approval to implement everything.
