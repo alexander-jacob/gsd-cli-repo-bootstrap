@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gsd-workflow-cli"
+version = "2.0.0"
+description = "Project-owned workflow presets for GSD, Claude and Codex"
+requires-python = ">=3.10"
+dependencies = ["click>=8.1,<9"]
+
+[project.scripts]
+gsd-cli = "gsd_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gsd_cli*"]
+
+[tool.setuptools.package-data]
+gsd_cli = ["data/*.json"]
