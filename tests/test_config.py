@@ -1,5 +1,6 @@
 """Synchronization and migration exercise real temporary files and Git indexes."""
 import copy
+import fcntl
 import json
 import subprocess
 import tempfile
@@ -61,6 +62,82 @@ class ConfigTests(unittest.TestCase):
     def sync(self, workflow='plan', runtime='codex', level='medium'):
         self.put(self.policy_file, self.policy)
         return config.synchronize(self.root, self.policy, resolve(self.policy, workflow, runtime, level))
+
+    def preview(self):
+        self.assertTrue(hasattr(config, 'preview'), 'read-only preview is not implemented')
+        return config.preview(self.root, self.policy, resolve(self.policy, 'plan', 'codex', 'medium'))
+
+    def file_snapshot(self):
+        return {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in self.root.rglob('*') if p.is_file()}
+
+    def test_preview_matches_sync_and_captures_without_writes(self):
+        self.init()
+        self.sync()
+        w = self.get(self.working)
+        w['from_gsd'] = 2
+        self.put(self.working, w)
+        d = self.get(self.default)
+        d['from_git'] = True
+        self.put(self.default, d)
+        before = self.file_snapshot()
+        preview = self.preview()
+        self.assertEqual(self.file_snapshot(), before)
+        self.assertIn('from_gsd', preview[1])
+        self.assertEqual(preview, self.sync())
+
+    def test_preview_fresh_checkout_without_creating_lock_or_working(self):
+        self.init()
+        for name in (config.WORKING, config.STATE, config.LOCK):
+            (self.root / name).unlink(missing_ok=True)
+        before = self.file_snapshot()
+        preview = self.preview()
+        self.assertEqual(self.file_snapshot(), before)
+        self.assertEqual(preview, self.sync())
+
+    def test_preview_refuses_journal_and_held_lock_without_writes(self):
+        self.init()
+        journal = self.root / config.JOURNAL
+        journal.write_text('{}')
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(config.ConfigError, 'recovery'):
+            self.preview()
+        self.assertEqual(self.file_snapshot(), before)
+        journal.unlink()
+        with (self.root / config.LOCK).open('r') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(config.ConfigError, 'process'):
+                self.preview()
+        self.preview()  # An idle lock file is harmless.
+
+    def test_preview_rejects_conflict_and_changed_policy(self):
+        self.init()
+        p = copy.deepcopy(self.policy)
+        p['gsd']['min_version'] = '2.0.0'
+        self.put(self.policy_file, p)
+        with self.assertRaisesRegex(config.ConfigError, 'changed'):
+            self.preview()
+        self.put(self.policy_file, self.policy)
+        self.sync()
+        w, d = self.get(self.working), self.get(self.default)
+        w['custom'], d['custom'] = 'local', 'remote'
+        self.put(self.working, w)
+        self.put(self.default, d)
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(config.ConfigError, 'conflict'):
+            self.preview()
+        self.assertEqual(self.file_snapshot(), before)
+
+    def test_preview_detects_inputs_changed_during_preparation(self):
+        self.init()
+        original = config.load_state
+        def changing(root):
+            state = original(root)
+            self.put(self.default, {'changed': True})
+            return state
+        with mock.patch.object(config, 'load_state', side_effect=changing):
+            with self.assertRaisesRegex(config.ConfigError, 'changed'):
+                self.preview()
 
     def test_init_preserves_working_and_repeated_policy(self):
         before = self.working.read_bytes()

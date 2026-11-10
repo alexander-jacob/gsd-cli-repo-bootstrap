@@ -261,37 +261,92 @@ def transaction(root: Path, contents: dict, untrack=False) -> None:
     recover(root)
 
 
+def prepare(default: dict, working: dict | None, state: dict | None,
+            resolved: dict) -> tuple[dict, dict, dict, list[str]]:
+    """Calculate a launch transaction without modifying inputs or files."""
+    current = managed_paths(resolved)
+    previous = {tuple(p) for p in state['managed']} if state else set()
+    excluded = current | previous | set(TRANSIENT)
+    reject_owned(default, excluded)
+    local = project(working, excluded) if working is not None else default
+    if state is None:
+        if not json_equal(local, default):
+            raise ConfigError('No synchronization baseline and persistent configs differ; reconcile config.json with config.default.json before retrying')
+        baseline = default
+    else:
+        baseline = project(state['baseline'], excluded)
+    merged = merge(baseline, local, default)
+    data = copy.deepcopy(merged)
+    if working is not None:
+        for path in TRANSIENT:
+            value = get_path(working, path)
+            if value is not MISSING:
+                put_path(data, path, value)
+    for path, value in resolved['values'].items():
+        put_path(data, path, value)
+    metadata = {'version': 1, 'baseline': merged, 'managed': sorted(current)}
+    return data, merged, metadata, changed_paths(default, merged)
+
+
+def input_stamps(root: Path) -> dict:
+    stamps = {}
+    for name in (POLICY, DEFAULT, WORKING, STATE, LOCK, JOURNAL):
+        path = root / name
+        safe_path(path)
+        try:
+            st = path.stat()
+            stamps[name] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        except FileNotFoundError:
+            stamps[name] = None
+    return stamps
+
+
+@contextmanager
+def preview_lock(root: Path):
+    """Probe an existing lock without creating or modifying a lock file."""
+    safe_path(root / LOCK)
+    try:
+        handle = (root / LOCK).open('r')
+    except FileNotFoundError:
+        yield
+        return
+    with handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ConfigError('Another gsd-cli process is preparing configuration; retry shortly') from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def preview(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[str]]:
+    with preview_lock(root):
+        before = input_stamps(root)
+        if before[JOURNAL] is not None:
+            raise ConfigError('Pending configuration recovery; preview cannot recover or write project files')
+        if not json_equal(read_json(root / POLICY), policy):
+            raise ConfigError('Project policy changed during preparation; retry')
+        default = read_json(root / DEFAULT)
+        working = read_json(root / WORKING) if before[WORKING] is not None else None
+        state = load_state(root)
+        data, _, _, captured = prepare(default, working, state, resolved)
+        if before != input_stamps(root):
+            raise ConfigError('Project configuration changed during preparation; retry')
+        return data, captured
+
+
 def synchronize(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[str]]:
     with locked(root):
         recover(root)
         if not json_equal(read_json(root / POLICY), policy):
             raise ConfigError('Project policy changed during preparation; retry')
         default = read_json(root / DEFAULT)
-        state = load_state(root)
-        current = managed_paths(resolved)
-        previous = {tuple(p) for p in state['managed']} if state else set()
-        excluded = current | previous | set(TRANSIENT)
-        reject_owned(default, excluded)
         working = read_json(root / WORKING) if (root / WORKING).exists() else None
-        local = project(working, excluded) if working is not None else default
-        if state is None:
-            if not json_equal(local, default):
-                raise ConfigError('No synchronization baseline and persistent configs differ; reconcile config.json with config.default.json before retrying')
-            baseline = default
-        else:
-            baseline = project(state['baseline'], excluded)
-        merged = merge(baseline, local, default)
-        data = copy.deepcopy(merged)
-        if working is not None:
-            for path in TRANSIENT:
-                value = get_path(working, path)
-                if value is not MISSING:
-                    put_path(data, path, value)
-        for path, value in resolved['values'].items():
-            put_path(data, path, value)
-        metadata = {'version': 1, 'baseline': merged, 'managed': sorted(current)}
+        data, merged, metadata, captured = prepare(default, working, load_state(root), resolved)
         transaction(root, {DEFAULT: serialize(merged), WORKING: serialize(data), STATE: serialize(metadata)})
-        return data, changed_paths(default, merged)
+        return data, captured
 
 
 def seed_policy(working: dict) -> dict:
