@@ -16,6 +16,17 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(config.merge({}, {'x': {'a': 1}}, {'x': {'b': 2}}), {'x': {'a': 1, 'b': 2}})
         self.assertEqual(config.merge({'a': [1]}, {'a': [2]}, {'a': [2]}), {'a': [2]})
 
+    def test_json_equality_distinguishes_booleans_and_numbers(self):
+        for base, remote in [(1, True), (0, False), ({'x': 1}, {'x': True}), ([0], [False])]:
+            with self.subTest(base=base):
+                merged = config.merge({'v': base}, {'v': base}, {'v': remote})
+                self.assertEqual(json.dumps(merged), json.dumps({'v': remote}))
+                self.assertEqual(config.changed_paths({'v': base}, {'v': remote}), ['v.x'] if isinstance(base, dict) else ['v'])
+        with self.assertRaises(config.ConfigError):
+            config.merge(0, False, 2)
+        with self.assertRaises(config.ConfigError):
+            config.merge({'v': [0]}, {'v': [False]}, {'v': [2]})
+
     def test_conflicting_values_arrays_and_parent_deletion(self):
         for base, local, default in [({'a': 1}, {'a': 2}, {'a': 3}),
                                      ({'a': [1]}, {'a': [2]}, {'a': [3]}),
@@ -137,6 +148,28 @@ class ConfigTests(unittest.TestCase):
         d['models'] = {'execution': 'opus'}
         self.put(self.default, d)
         with self.assertRaisesRegex(config.ConfigError, 'models.execution'):
+            self.sync()
+
+    def test_boolean_default_edit_survives_complete_sync(self):
+        self.put(self.working, {'number': 1})
+        self.init()
+        self.sync()
+        d = self.get(self.default)
+        d['number'] = True
+        self.put(self.default, d)
+        data, _ = self.sync()
+        self.assertIs(data['number'], True)
+        self.assertIs(self.get(self.default)['number'], True)
+
+    def test_missing_baseline_detects_boolean_number_disagreement(self):
+        self.put(self.working, {'number': 1})
+        self.init()
+        self.sync()
+        self.state.unlink()
+        d = self.get(self.default)
+        d['number'] = True
+        self.put(self.default, d)
+        with self.assertRaisesRegex(config.ConfigError, 'baseline'):
             self.sync()
 
     def test_recovery_after_partial_write(self):

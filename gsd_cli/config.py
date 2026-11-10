@@ -100,13 +100,24 @@ def locked(root: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def json_equal(left, right) -> bool:
+    """Compare JSON values without Python's bool/number equivalence."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(json_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(json_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def merge(base, local, default, path=()):
     """Merge JSON trees, treating absent keys distinctly from null."""
-    if local == default:
+    if json_equal(local, default):
         return copy.deepcopy(local) if local is not MISSING else MISSING
-    if local == base:
+    if json_equal(local, base):
         return copy.deepcopy(default) if default is not MISSING else MISSING
-    if default == base:
+    if json_equal(default, base):
         return copy.deepcopy(local) if local is not MISSING else MISSING
     if isinstance(local, dict) and isinstance(default, dict) and (isinstance(base, dict) or base is MISSING):
         b = {} if base is MISSING else base
@@ -183,7 +194,7 @@ def load_state(root: Path):
 
 
 def changed_paths(before, after, prefix=()) -> list[str]:
-    if before == after:
+    if json_equal(before, after):
         return []
     if isinstance(before, dict) and isinstance(after, dict):
         return [p for k in sorted(before.keys() | after.keys())
@@ -253,7 +264,7 @@ def transaction(root: Path, contents: dict, untrack=False) -> None:
 def synchronize(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[str]]:
     with locked(root):
         recover(root)
-        if read_json(root / POLICY) != policy:
+        if not json_equal(read_json(root / POLICY), policy):
             raise ConfigError('Project policy changed during preparation; retry')
         default = read_json(root / DEFAULT)
         state = load_state(root)
@@ -264,7 +275,7 @@ def synchronize(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[st
         working = read_json(root / WORKING) if (root / WORKING).exists() else None
         local = project(working, excluded) if working is not None else default
         if state is None:
-            if local != default:
+            if not json_equal(local, default):
                 raise ConfigError('No synchronization baseline and persistent configs differ; reconcile config.json with config.default.json before retrying')
             baseline = default
         else:
@@ -356,7 +367,7 @@ def initialize(root: Path) -> None:
         if (root / DEFAULT).exists():
             default = read_json(root / DEFAULT)
             reject_owned(default, paths | set(TRANSIENT))
-            if existing_state is None and working and project(working, paths | set(TRANSIENT)) != default:
+            if existing_state is None and working and not json_equal(project(working, paths | set(TRANSIENT)), default):
                 raise ConfigError('Existing config.default.json differs; reconcile before init')
             baseline = existing_state['baseline'] if existing_state else default
         else:
