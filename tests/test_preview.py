@@ -132,6 +132,21 @@ class PreviewCliTests(unittest.TestCase):
         self.assertIn('Launcher effective configuration:', result.stdout)
         self.assertEqual(self.snapshot(), before)
 
+    def test_inherited_effort_keeps_complete_cli_report(self):
+        self.install()
+        path = self.project / '.planning/config.default.json'
+        data = json.loads(path.read_text())
+        data['effort'] = {'agent_overrides': {'gsd-executor': 'inherit'}}
+        path.write_text(json.dumps(data))
+        before = self.snapshot()
+        result = self.run_launcher('exec', 'codex', '--config')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('[COMPLETE]', result.stdout)
+        self.assertNotIn('malformed resolver result', result.stdout)
+        row = next(line for line in result.stdout.splitlines() if line.startswith('gsd-executor |'))
+        self.assertIn('| inherit | inherit |', row)
+        self.assertEqual(self.snapshot(), before)
+
     def test_pending_capture_and_config_equal_normal_launch(self):
         self.install()
         self.assertEqual(self.run_launcher('exec', 'claude').returncode, 0)

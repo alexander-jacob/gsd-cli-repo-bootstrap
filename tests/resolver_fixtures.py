@@ -44,7 +44,8 @@ exports.cmdResolveExecution = function(cwd, agent, raw, opts) {
   fs.writeSync(1, JSON.stringify({
     model: c.model_overrides?.[agent] || MODEL,
     profile: 'balanced', effort, effort_rendered: effort,
-    effort_param: 'reasoning_effort', effort_propagation: 'spawn',
+    effort_param: effort === 'inherit' ? null : 'reasoning_effort',
+    effort_propagation: effort === 'inherit' ? null : 'spawn',
     effort_requested: effort, effort_clamped: false, effort_clamp_reason: null,
     effort_effective: effort, effort_effective_source: 'resolved',
     fast_mode: false, fast_mode_supported: false,

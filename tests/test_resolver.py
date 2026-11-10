@@ -91,6 +91,12 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(result['complete'])
         self.assertIn('timed out', ' '.join(result['diagnostics']))
 
+    def test_inherited_effort_with_null_propagation_is_a_complete_query(self):
+        result = self.inspect(data={'effort': {'agent_overrides': {'gsd-planner': 'inherit'}}})
+        self.assertTrue(result['complete'], result['diagnostics'])
+        self.assertEqual(result['agents']['gsd-planner']['effort'], 'inherit')
+        self.assertIsNone(result['agents']['gsd-planner']['effort_propagation'])
+
     def test_unsupported_context_and_filesystem_migration_are_explicit(self):
         self.env['GSD_PROJECT'] = 'other-project'
         self.assertFalse(self.inspect()['complete'])

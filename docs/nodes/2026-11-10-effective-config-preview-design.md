@@ -1,6 +1,6 @@
 # Effective configuration preview
 
-Status: approved by the owner after adding the check column; implementation in progress.
+Status: approved by the owner after adding the check column; implemented and verified; see the companion verification document.
 
 ## Intent and decisions
 

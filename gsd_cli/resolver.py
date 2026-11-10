@@ -55,9 +55,14 @@ def query_environment(root: Path, runtime: str) -> dict:
 def validate_result(value) -> bool:
     if not isinstance(value, dict):
         return False
-    strings = ('model', 'profile', 'effort', 'effort_propagation', 'effort_effective', 'effort_effective_source')
+    strings = ('model', 'profile', 'effort', 'effort_effective', 'effort_effective_source')
     if any(not isinstance(value.get(key), str) for key in strings):
         return False
+    # GSD deliberately emits null when no per-agent effort parameter/channel
+    # applies (for example inherit). Absence or other types remain malformed.
+    for key in ('effort_propagation', 'effort_param', 'effort_rendered'):
+        if key not in value or (value[key] is not None and not isinstance(value[key], str)):
+            return False
     if value['effort_effective_source'] not in ('resolved', 'frontmatter', 'frontmatter-absent'):
         return False
     return (isinstance(value.get('effort_clamped'), bool)
