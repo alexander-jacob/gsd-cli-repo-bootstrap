@@ -75,6 +75,15 @@ class ResolverTests(unittest.TestCase):
         self.assertIn('gsd-planner', ' '.join(result['diagnostics']))
         self.assertFalse(self.inspect(data={'malformed_result': True})['complete'])
 
+    def test_malformed_catalog_nested_metadata_is_incomplete(self):
+        path = self.core / 'bin/shared/model-catalog.json'
+        catalog = json.loads(path.read_text())
+        catalog['runtimeTierDefaults'] = []
+        path.write_text(json.dumps(catalog))
+        result = self.inspect()
+        self.assertFalse(result['complete'])
+        self.assertIn('catalog', ' '.join(result['diagnostics']))
+
     def test_timeout_is_incomplete(self):
         self.assertIsNotNone(importlib.util.find_spec('gsd_cli.resolver'), 'resolver adapter is not implemented')
         with mock.patch('gsd_cli.resolver.subprocess.run', side_effect=subprocess.TimeoutExpired('node', 20)):

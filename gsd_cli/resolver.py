@@ -79,12 +79,21 @@ def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
         diagnostics.append('Node is unavailable; install Node to query the installed GSD resolver')
         return result
     try:
-        catalog = config.read_json(version.directory / 'bin/shared/model-catalog.json').get('agents')
+        manifest = config.read_json(version.directory / 'bin/shared/model-catalog.json')
+        catalog = manifest.get('agents')
         if not isinstance(catalog, dict) or not catalog or any(
                 not isinstance(k, str) or not k or not isinstance(v, dict) for k, v in catalog.items()):
             raise config.ConfigError('Installed GSD agent catalog is unavailable or malformed')
         result['catalog'] = catalog
+        # GSD model-catalog.cjs derives MODEL_ALIAS_MAP from these same entries.
+        runtime_tiers = manifest.get('runtimeTierDefaults', {})
+        if not isinstance(runtime_tiers, dict) or not isinstance(runtime_tiers.get('claude', {}), dict):
+            raise config.ConfigError('Installed GSD catalog runtime tier metadata is malformed')
+        tiers = runtime_tiers.get('claude', {})
+        result['aliases'] = {tier: entry['model'] for tier, entry in tiers.items()
+                             if isinstance(entry, dict) and isinstance(entry.get('model'), str)}
         env = query_environment(root, runtime)
+        result['workstream'] = env.get('GSD_WORKSTREAM', '').strip()
         snapshots = snapshot_configs(root, data, env)
         # This bridge deliberately never invokes gsd-tools.cjs: its bootstrap
         # can build/repair the installed library, even for a query command.

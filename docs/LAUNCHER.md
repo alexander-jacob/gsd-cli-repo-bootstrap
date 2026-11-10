@@ -21,7 +21,7 @@ gsd-cli init
 gsd-cli status
 gsd-cli check [claude|codex]
 gsd-cli sessions [claude|codex] [--pick [N]]
-gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [-- CHILD_ARGS...]
+gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [--config] [-- CHILD_ARGS...]
 ```
 
 Workflow and runtime are mandatory; level defaults to medium. Old runtime-first syntax is rejected with a replacement example. No preset runs a GSD command. Start the desired GSD skill yourself after the CLI opens.
@@ -29,6 +29,32 @@ Workflow and runtime are mandatory; level defaults to medium. Old runtime-first 
 The first literal `--` separates launcher arguments from child arguments. Everything after it is forwarded unchanged, including another `--`, `--help`, `--secure` or `--model`. Before it, unknown options are errors. Codex directory switches (`-C`, `--cd`, including attached values) are rejected before writes because they would relocate the child after project selection; run the launcher from the destination project instead. Tokens after the child's own `--` remain literal positional arguments. `gsd-cli exec --help` is read-only launcher help; `gsd-cli exec claude -- --help` prepares config and launches Claude's help.
 
 A forwarded model/effort argument may override the preset at the child CLI's discretion. `--secure` suppresses automatic bypass only; it does not remove bypass flags you explicitly forward. No credential or model-availability probe runs.
+
+## Configuration preview
+
+```sh
+gsd-cli plan codex --config
+gsd-cli exec claude high --config
+gsd-cli ship codex --secure --config  # when ship is defined in project policy
+```
+
+This prints and exits. It calculates the same prospective `.planning/config.json` as a normal launch, including pending persistent changes, then asks the selected installed GSD resolver about each registered/configured agent using a temporary snapshot. It prints the complete prospective JSON, phase settings, requested session argv, reviewer models/efforts, and agent resolution. All roles are listed; this is not a prediction of which agents a workflow will execute.
+
+The **Check** column compares configured expectations with available evidence:
+
+| Check | Meaning |
+|---|---|
+| `OK` | Applicable comparisons match resolver/installed-file evidence. |
+| `NOT OK` | A known mismatch exists; the notes name the setting and both values. |
+| `UNKNOWN` | Evidence or an unambiguous configured expectation is missing. |
+
+For Claude, the report distinguishes configured effort from installed agent frontmatter and session inheritance. For Codex, it shows GSD's rendered effort and propagation mechanism. A resolver-confirmed configuration is not proof of actual AI execution. Session and external reviewer rows are configuration-only and carry `UNKNOWN`. Agents without an explicit effort expectation also retain `UNKNOWN`; GSD's resolved default is still shown. A mismatch takes precedence over other unknown fields in the same row.
+
+The preview never launches an AI CLI, performs journal recovery, captures changes, writes project config or launch logs, or synchronizes installed agent files. Node and compatible compiled GSD modules are required; AI CLI binaries and credentials are not. It bypasses GSD's automatic build entry point. Temporary files are removed after the query. Active workstream config is copied into the snapshot; unsupported `GSD_PROJECT` context or filesystem-dependent legacy `multiRepo` migration yields an explicit incomplete result.
+
+Exit 0 means preparation and resolution completed, even if there are `NOT OK` or legitimate `UNKNOWN` findings. An unavailable/old resolver, malformed response, timeout, or unsupported context prints known configuration, labels the report `INCOMPLETE`, and exits 1. A merge conflict, pending recovery journal, or held synchronization lock prevents a reliable preview and fails without changing files. Idle lock files are allowed.
+
+Put `--config` before the first `--`. After that delimiter it is a child option and normal launch behavior applies. Forwarded arguments are displayed, with a warning that they may override the requested session settings. `status` continues to show the saved working config rather than calculating a prospective launch.
 
 ## GSD version checks
 

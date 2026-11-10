@@ -10,9 +10,12 @@ gsd-cli exec claude --secure
 gsd-cli exec codex -- --resume  # child arguments go after --
 gsd-cli check                  # verify both GSD installations
 gsd-cli check codex            # verify only Codex GSD
+gsd-cli plan codex --config    # preview config and GSD resolution; print and exit
 ```
 
 Workflow and runtime are always explicit. You can define additional workflow names, such as `ship`, in your project policy. No GSD command is invoked automatically.
+
+`--config` works with every workflow preset. It prints the prospective JSON, session/reviewer settings, and an agent model/effort matrix with `OK`, `NOT OK`, or `UNKNOWN` checks. The selected installed GSD resolver reads a temporary configuration snapshot; project files, installed agents, and launch logs stay unchanged. No AI session runs. Node is required for resolver queries. An incomplete query prints available configuration and exits 1; known setting differences are findings, not command failures. See [preview details](docs/LAUNCHER.md#configuration-preview).
 
 ## Install and initialize
 

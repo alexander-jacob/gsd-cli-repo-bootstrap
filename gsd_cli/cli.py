@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from . import config, sessions
+from . import config, preview, resolver, sessions
 from .policy import LEVELS, RUNTIMES, PolicyError, resolve, validate
 from .versions import VersionError, check_installation, format_result
 
@@ -42,7 +42,7 @@ class WorkflowGroup(click.Group):
 def cli():
     """Open Claude/Codex with project-owned workflow presets.
 
-    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [-- CLI_ARGS...]
+    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [--config] [-- CLI_ARGS...]
     Level defaults to medium. Put all child CLI arguments after --.
     Presets open the runtime; they never invoke a GSD workflow.
     """
@@ -111,18 +111,38 @@ def guard_project_location(runtime: str, forwarded: list[str]) -> None:
                                      'run gsd-cli from the destination project instead of forwarding a directory switch')
 
 
+def launch_arguments(runtime: str, resolved: dict, secure: bool, forwarded: list[str]) -> list[str]:
+    argv = [runtime, '--model', resolved['model']]
+    argv += (['--effort', resolved['effort']] if runtime == 'claude'
+             else ['-c', 'model_reasoning_effort=' + resolved['effort']])
+    if resolved['permissions'] == 'bypass' and not secure:
+        argv += ['--dangerously-skip-permissions' if runtime == 'claude'
+                 else '--dangerously-bypass-approvals-and-sandbox']
+    return argv + forwarded
+
+
 def workflow_command(name: str):
     @click.command(name, help=f'Open a runtime using the {name} preset. Child options belong after --.')
     @click.argument('runtime', type=click.Choice(RUNTIMES))
     @click.argument('level', type=click.Choice(LEVELS), default='medium')
     @click.option('--secure', is_flag=True, help='Suppress the preset permission-bypass flag.')
+    @click.option('--config', 'show_config', is_flag=True, help='Print effective config and installed GSD model/effort checks, then exit without launching.')
     @click.pass_context
-    def launch(ctx, runtime, level, secure):
+    def launch(ctx, runtime, level, secure, show_config):
         forwarded = ctx.obj.get('forwarded', [])
         guard_project_location(runtime, forwarded)
         root = config.discover()
         policy = project_policy(root)
         resolved = resolve(policy, name, runtime, level)
+        argv = launch_arguments(runtime, resolved, secure, forwarded)
+        if show_config:
+            data, captured = config.preview(root, policy, resolved)
+            inspection = resolver.inspect(root, data, runtime, policy['gsd']['min_version'])
+            click.echo(preview.render(root, name, runtime, level, policy, resolved, data,
+                                      captured, argv, forwarded, inspection), nl=False)
+            if not inspection['complete']:
+                raise click.ClickException('Configuration preview is incomplete; see resolver diagnostics above.')
+            return
         executable = shutil.which(runtime)
         if executable is None:
             raise config.ConfigError(f"Cannot find CLI '{runtime}' on PATH")
@@ -138,13 +158,6 @@ def workflow_command(name: str):
             click.echo('GSD: Claude agent effort also depends on installed agent frontmatter. '
                        'After policy changes, review GSD effort sync --apply (global agent files); '
                        'gsd-cli does not modify those files.', err=True)
-        argv = [runtime, '--model', resolved['model']]
-        argv += (['--effort', resolved['effort']] if runtime == 'claude'
-                 else ['-c', 'model_reasoning_effort=' + resolved['effort']])
-        if resolved['permissions'] == 'bypass' and not secure:
-            argv += ['--dangerously-skip-permissions' if runtime == 'claude'
-                     else '--dangerously-bypass-approvals-and-sandbox']
-        argv += forwarded
         sessions.record_launch(root, runtime, f'{name}/{level}', resolved['model'], forwarded, data,
                                effort=resolved['effort'], workflow=name, level=level, policy=policy)
         click.echo(f"GSD: {name}/{runtime}/{level} | model={resolved['model']} | effort={resolved['effort']} | reviewers={','.join(resolved['reviewers'])}", err=True)

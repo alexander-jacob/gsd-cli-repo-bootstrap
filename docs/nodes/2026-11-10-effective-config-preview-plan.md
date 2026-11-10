@@ -32,10 +32,10 @@
 
 **Interfaces:** `prepare(default: dict, working: dict | None, state: dict | None, resolved: dict) -> tuple[dict, dict, dict, list[str]]` returns working/default/state/changed paths without mutation. `preview(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[str]]` reads and verifies stable inputs. `synchronize` keeps its existing signature and uses `prepare`.
 
-- [ ] Write failing tests for preview/synchronize parity, pending capture without writes, unchanged bytes/mtime, missing working/state, merge conflicts, pending journal, occupied versus idle lock, and policy changes.
-- [ ] Run `python3 -m unittest discover -s tests -p test_config.py -q`; expect new preview assertions to fail before implementation.
-- [ ] Extract `prepare`; implement stable file snapshots and non-writing shared lock probe on an existing lock file. Reject a held lock or pending journal. Retain normal synchronization's exclusive lock and transaction.
-- [ ] Run the targeted tests and full suite; expect all pass. Commit `Share configuration preparation with read-only previews`.
+- [x] Write failing tests for preview/synchronize parity, pending capture without writes, unchanged bytes/mtime, missing working/state, merge conflicts, pending journal, occupied versus idle lock, and policy changes.
+- [x] Run `python3 -m unittest discover -s tests -p test_config.py -q`; expect new preview assertions to fail before implementation.
+- [x] Extract `prepare`; implement stable file snapshots and non-writing shared lock probe on an existing lock file. Reject a held lock or pending journal. Retain normal synchronization's exclusive lock and transaction.
+- [x] Run the targeted tests and full suite; expect all pass. Commit `Share configuration preparation with read-only previews`.
 
 ### Task 2: Query installed GSD against a disposable snapshot
 
@@ -43,11 +43,11 @@
 
 **Interfaces:** `inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict` returns installation details, catalog, loaded config/source, agent results, diagnostics, and `complete: bool`. Errors become explicit incomplete findings. Receives task 1's prepared `data`.
 
-- [ ] Write failing tests using fabricated installed Node modules for runtime env/local selection, config loaded from scratch, workstream overlays, no CLI bootstrap invocation, malformed catalog/output, partial row errors, timeout/missing Node/old version, and unchanged source files/mtime.
-- [ ] Run `python3 -m unittest discover -s tests -p test_resolver.py -q`; expect absent adapter failures.
-- [ ] Implement selected-install checks; normalize runtime/GSD home env paths to original root. Copy workstream config as data. Reject unsupported GSD_PROJECT context and filesystem-dependent legacy sub-repo migrations explicitly. Use the installed catalog and add custom override agents.
-- [ ] Implement a small packaged Node bridge calling `loadConfigResolved(..., {persist:false})` for context and exported `cmdResolveExecution` for each agent. Frame original command JSON without replacing resolver logic. Call compiled modules directly, so no bootstrap/build runs. Bound execution to 20 seconds and validate output; retain failed row diagnostics. No installation/home writes.
-- [ ] Run targeted and full tests; expect all pass. Commit `Resolve preview settings with the selected GSD installation`.
+- [x] Write failing tests using fabricated installed Node modules for runtime env/local selection, config loaded from scratch, workstream overlays, no CLI bootstrap invocation, malformed catalog/output, partial row errors, timeout/missing Node/old version, and unchanged source files/mtime.
+- [x] Run `python3 -m unittest discover -s tests -p test_resolver.py -q`; expect absent adapter failures.
+- [x] Implement selected-install checks; normalize runtime/GSD home env paths to original root. Copy workstream config as data. Reject unsupported GSD_PROJECT context and filesystem-dependent legacy sub-repo migrations explicitly. Use the installed catalog and add custom override agents.
+- [x] Implement a small packaged Node bridge calling `loadConfigResolved(..., {persist:false})` for context and exported `cmdResolveExecution` for each agent. Frame original command JSON without replacing resolver logic. Call compiled modules directly, so no bootstrap/build runs. Bound execution to 20 seconds and validate output; retain failed row diagnostics. No installation/home writes.
+- [x] Run targeted and full tests; expect all pass. Commit `Resolve preview settings with the selected GSD installation`.
 
 ### Task 3: Comparison report, Click option, and user documentation
 
@@ -55,11 +55,11 @@
 
 **Interfaces:** `render(root: Path, workflow: str, runtime: str, level: str, policy: dict, resolved: dict, data: dict, captured: list[str], argv: list[str], forwarded: list[str], inspection: dict) -> str`. CLI obtains `data` via task 1, `inspection` via task 2, prints report, and fails only if incomplete. Share `launch_arguments(runtime, resolved, secure, forwarded) -> list[str]` between launch and preview.
 
-- [ ] Write failing tests for OK/NOT OK/UNKNOWN, mismatch precedence, inheritance/forwarded ambiguity, clamping, configured reviewers, complete JSON, custom workflows/default medium, secure argv, option boundary, unavailable resolver, terminal escaping, and no session/billing/executable requirement or writes.
-- [ ] Run `python3 -m unittest discover -s tests -p test_preview.py -q`; expect missing report/option failures.
-- [ ] Implement comparisons against explicit pins or launcher phase-tier mappings, retaining uncertainty when no expectation is justified. Render deterministic grouped agent rows with detail lines and Check column; session/reviewer configuration-only rows remain UNKNOWN. Display loader context and requested inputs separately from GSD resolution; mismatch notes name each field. Add Click branch before launch checks/writes.
-- [ ] Add concise documentation examples, evidence/check semantics, incomplete exit behavior, and Node requirement. Mark design approved and record the occupied-lock refinement.
-- [ ] Run full offline suite plus Python 3.10 suite; exercise both real installed resolvers with disposable fixtures and verify untouched project/installed agent artifacts. Inspect package resources. Commit `Add resolver-backed config previews to workflow commands`.
+- [x] Write failing tests for OK/NOT OK/UNKNOWN, mismatch precedence, inheritance/forwarded ambiguity, clamping, configured reviewers, complete JSON, custom workflows/default medium, secure argv, option boundary, unavailable resolver, terminal escaping, and no session/billing/executable requirement or writes.
+- [x] Run `python3 -m unittest discover -s tests -p test_preview.py -q`; expect missing report/option failures.
+- [x] Implement comparisons against explicit pins or launcher phase-tier mappings, retaining uncertainty when no expectation is justified. Render deterministic grouped agent rows with detail lines and Check column; session/reviewer configuration-only rows remain UNKNOWN. Display loader context and requested inputs separately from GSD resolution; mismatch notes name each field. Add Click branch before launch checks/writes.
+- [x] Add concise documentation examples, evidence/check semantics, incomplete exit behavior, and Node requirement. Mark design approved and record the occupied-lock refinement.
+- [x] Run full offline suite plus Python 3.10 suite; exercise both real installed resolvers with disposable fixtures and verify untouched project/installed agent artifacts. Inspect package resources. Commit `Add resolver-backed config previews to workflow commands`.
 
 ## Final verification
 

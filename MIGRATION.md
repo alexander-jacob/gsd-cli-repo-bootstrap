@@ -182,6 +182,21 @@ than assuming the global copy is selected.
 
 ## 5. Open your first workflow session
 
+Preview the settings before opening the session:
+
+```sh
+gsd-cli plan claude --config
+# Or: gsd-cli plan codex --config
+```
+
+This prints the prospective config and GSD's agent model/effort results, then
+exits without starting a session or modifying project files. Node is required.
+Scan the `Check` column: `OK` matches the available evidence, `NOT OK` identifies
+a difference, and `UNKNOWN` means there is not enough evidence to compare.
+Claude's installed effort can differ from policy; the report shows both values.
+An `INCOMPLETE` report exits 1 and explains what could not be resolved. Review
+the full behavior in [Configuration preview](docs/LAUNCHER.md#configuration-preview).
+
 For planning with Claude:
 
 ```sh

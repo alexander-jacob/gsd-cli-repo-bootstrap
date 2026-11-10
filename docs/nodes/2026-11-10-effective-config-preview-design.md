@@ -1,6 +1,6 @@
 # Effective configuration preview
 
-Status: proposed design, builder check complete with no important unanswered questions; awaiting owner approval. Implementation has not started.
+Status: approved by the owner after adding the check column; implementation in progress.
 
 ## Intent and decisions
 
@@ -54,7 +54,7 @@ Extract a pure preparation operation from `config.synchronize`: accept snapshots
 
 Preview reads the files and calls the same operation, without creating locks, performing recovery, untracking files, invoking Git mutations, capturing changes, writing a journal, recording a launch, modifying agent files, or executing an AI CLI. Temporary files outside the project may be created and must be removed on success and failure.
 
-A pending journal or existing synchronization lock blocks preview rather than presenting an uncertain snapshot. Detect changes to input files during preparation and fail with a retry message. Merge conflicts, invalid policy/configuration, and an ambiguous missing baseline are errors using the same rules as launch. Preview can use a fresh initialized checkout where working config/state are absent if normal synchronization can do so.
+A pending journal or occupied synchronization lock blocks preview rather than presenting an uncertain snapshot. An idle lock file is allowed: init and normal launch leave that file behind. Detect changes to input files during preparation and fail with a retry message. Merge conflicts, invalid policy/configuration, and an ambiguous missing baseline are errors using the same rules as launch. Preview can use a fresh initialized checkout where working config/state are absent if normal synchronization can do so.
 
 ## Resolver adapter and evidence
 
