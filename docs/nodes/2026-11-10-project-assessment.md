@@ -184,3 +184,7 @@ A proposed detailed design is recorded in [Configurable workflow launcher design
 ### Click and package installation selected
 
 The owner prefers Click for CLI maintainability and explicitly accepted replacing the single-file installation with a Python package installed through pipx. This supersedes the earlier standard-library-only and single-file distribution constraints for the redesign. Click handles the CLI boundary; configuration, synchronization, and runtime logic remain ordinary Python modules. The revised design includes package metadata, bundled starter configuration, isolated dependency installation, and tests of the installed entry point and argument-forwarding boundary. The full design is still awaiting approval; acceptance of Click and pipx is not recorded as approval to implement everything.
+
+### Performance and price investigation
+
+The owner requested a careful code/documentation-grounded audit of GSD configuration options and agent reasoning needs before implementation. The [performance and cost audit](2026-11-10-gsd-performance-cost-audit.md) contains task and switch matrices, real resolver results, a candidate settings fragment, and caveats about actual runtime effort delivery. This research adds effort-policy requirements to the pending design; it does not authorize changing active settings or claim benchmark-proven optimal models.

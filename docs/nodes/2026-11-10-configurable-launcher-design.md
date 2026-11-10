@@ -2,6 +2,8 @@
 
 Date: 2026-11-10. Status: proposed design, awaiting owner approval.
 
+Research update: the subsequent [GSD performance and cost audit](2026-11-10-gsd-performance-cost-audit.md) identifies additional effort controls that must be resolved before this design is finalized: Claude session effort is supported, agent effort is independent of model level, installed Claude agent definitions require synchronization, and external review effort is configured separately per adapter. The schema below predates those findings and is not yet a complete effort-policy contract. No configuration changes from the audit have been applied.
+
 ## Intent and agreed behavior
 
 The launcher already serves the owner's need for preconfigured Claude and Codex workflows, including important external reviewer choices. The change should remove inconsistent CLI names and routine Git changes from selecting a runtime or model. Session history is not currently used and is secondary.

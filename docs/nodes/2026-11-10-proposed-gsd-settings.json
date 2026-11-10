@@ -1,0 +1,24 @@
+{
+  "effort": {
+    "agent_overrides": {
+      "gsd-planner": "high",
+      "gsd-roadmapper": "high",
+      "gsd-plan-checker": "high",
+      "gsd-integration-checker": "high",
+      "gsd-nyquist-auditor": "high",
+      "gsd-research-synthesizer": "high",
+      "gsd-pattern-mapper": "medium",
+      "gsd-codebase-mapper": "medium",
+      "gsd-intel-updater": "medium",
+      "gsd-doc-verifier": "medium",
+      "gsd-user-profiler": "medium",
+      "gsd-debugger": "high",
+      "gsd-security-auditor": "high",
+      "gsd-assumptions-analyzer": "high",
+      "gsd-doc-classifier": "low"
+    }
+  },
+  "workflow": {
+    "compact_content": true
+  }
+}
