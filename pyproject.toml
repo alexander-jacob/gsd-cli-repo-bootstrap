@@ -16,4 +16,4 @@ gsd-cli = "gsd_cli.cli:main"
 include = ["gsd_cli*"]
 
 [tool.setuptools.package-data]
-gsd_cli = ["data/*.json"]
+gsd_cli = ["data/*.json", "data/*.cjs"]
