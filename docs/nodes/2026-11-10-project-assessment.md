@@ -188,3 +188,7 @@ The owner prefers Click for CLI maintainability and explicitly accepted replacin
 ### Performance and price investigation
 
 The owner requested a careful code/documentation-grounded audit of GSD configuration options and agent reasoning needs before implementation. The [performance and cost audit](2026-11-10-gsd-performance-cost-audit.md) contains task and switch matrices, real resolver results, a candidate settings fragment, and caveats about actual runtime effort delivery. This research adds effort-policy requirements to the pending design; it does not authorize changing active settings or claim benchmark-proven optimal models.
+
+### Bundled initialization configuration required
+
+The owner explicitly requested that the tool contain a default configuration JSON for initializing projects. The design now requires a complete packaged JSON resource that seeds project-root `gsd-cli.config.json` through `init`, preserves existing project policy, and remains accessible after pipx installation. It is an initialization template, not an implicit runtime fallback. The actual template must follow the finalized policy and effort schema.

@@ -19,6 +19,7 @@ The owner selected these behaviors:
 - `.planning/config.default.json` is tracked; `.planning/config.json` is ignored and remains the file GSD uses.
 - Before each launch, automatically capture changes to persistent GSD settings into the tracked default, excluding launcher-managed fields.
 - Use Click for the CLI and package the application for installation through pipx, replacing the single-file copy installation. The owner accepted this dependency and packaging change.
+- Ship a complete default configuration JSON inside the package, used by `gsd-cli init` to initialize a project's launcher policy.
 
 The owner has chosen this direction, not yet approved the detailed schema or implementation decisions below. Items marked “proposed” are assistant decisions for review.
 
@@ -43,6 +44,8 @@ For CLI implementation and distribution, the owner selected **Click with a Pytho
 ## Click boundary and package installation
 
 Define a `gsd-cli` console entry point in `pyproject.toml`, backed by a `gsd_cli` package. Declare Click as a runtime dependency using a version range verified to support the stated Python minimum. Select the build backend and exact compatible dependency range during implementation planning; do not depend on an unbounded latest version. Package the complete starter policy as a resource so initialization works outside a source checkout. A module entry point (`python -m gsd_cli`) supports development and subprocess testing.
+
+The starter policy must be an actual, complete JSON resource (proposed package-relative path: `data/default-config.json`), not policy tables reconstructed in Python or an abbreviated documentation example. Load it with `importlib.resources` so it is available in installed wheels and pipx environments. It contains both runtimes' level mappings, phase defaults, agent pins, workflow presets, reviewer instances/groups, permissions, and the effort controls once their schema is finalized. Keep one authoritative shipped default; examples must be derived from it or checked for consistency.
 
 Use Click for command dispatch, runtime/level choices, the medium default, `--secure`, help, and user-facing errors. Built-in commands remain `init`, `status`, `sessions`, and help. A small custom Click group resolves project-defined workflow names into the same generic launch command; workflow definitions are data, never executable Python plugins. Project lookup and help generation are read-only. Global help and `init --help` must work outside a project and despite malformed project policy; valid project policy may enrich help with available workflows. Errors about invalid policy belong to commands that need it, not to generic help.
 
@@ -156,6 +159,8 @@ If the working file is missing, recreate it from D and policy; do not interpret 
 
 Proposed interface: retain `gsd-cli init` as the explicit setup/migration operation. It may discover an existing GSD project via its working or default config. Ordinary launch discovery must also recognize a default-only fresh checkout. Resolve paths relative to the project root, including when invoked from a descendant.
 
+For an already initialized GSD project with no launcher policy, `init` starts from the bundled default JSON and writes a complete project-root `gsd-cli.config.json`, incorporating the compatible existing settings described below. The user can then edit and track this project-owned copy. Repeated `init` calls must not overwrite an existing policy; invalid existing policy produces an actionable error rather than replacement. Package upgrades change the starter for future initialization only. Ordinary launches require and use the project policy, never silently fall back to the bundled default. Initializing the launcher still presupposes a GSD project; this command does not create application requirements, a roadmap, or other GSD project artifacts.
+
 For an existing legacy project:
 
 1. Validate existing configuration and inspect Git state before modifying files. Stop if the working config has staged changes that migration would discard or if conflicting destination files exist.
@@ -183,6 +188,7 @@ Extend existing offline subprocess fixtures; no paid calls or authentication. Ve
 - Both runtimes, all three levels, omitted level default, custom workflow names, task pins, independent reviewer models, explicit reviewer selection, and exact CLI argv.
 - Click help and error behavior outside projects and with malformed policy, exact forwarding after `--`, rejection of unknown launcher options before it, and no writes during help. Verify the installed console entry point and bundled policy resource outside the checkout.
 - Complete policy authority: changing the project policy affects launch behavior; incomplete policy fails before writes; launcher template updates do not override existing policy.
+- Bundled default JSON is complete and schema-valid; initialization from an installed package outside its source checkout can load it, create the project policy, and preserve user edits on repeated initialization.
 - Capture of persistent GSD edits, zero tracked changes on profile switches, transient exclusion, preservation of custom entries, removal of previously managed entries, and fresh checkout initialization.
 - Default-only edits, local-only edits, equal edits, independent edits, conflicting values, deletion versus null, parent deletion conflicts, and interrupted synchronization recovery.
 - Migration preserves local data, handles staged changes and existing ignores, untracks only the intended file, and leaves reviewable Git changes without committing.
