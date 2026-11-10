@@ -26,7 +26,7 @@ gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [-- CHILD_ARGS...]
 
 Workflow and runtime are mandatory; level defaults to medium. Old runtime-first syntax is rejected with a replacement example. No preset runs a GSD command. Start the desired GSD skill yourself after the CLI opens.
 
-The first literal `--` separates launcher arguments from child arguments. Everything after it is forwarded unchanged, including another `--`, `--help`, `--secure` or `--model`. Before it, unknown options are errors. `gsd-cli exec --help` is read-only launcher help; `gsd-cli exec claude -- --help` prepares config and launches Claude's help.
+The first literal `--` separates launcher arguments from child arguments. Everything after it is forwarded unchanged, including another `--`, `--help`, `--secure` or `--model`. Before it, unknown options are errors. Codex directory switches (`-C`, `--cd`, including attached values) are rejected before writes because they would relocate the child after project selection; run the launcher from the destination project instead. Tokens after the child's own `--` remain literal positional arguments. `gsd-cli exec --help` is read-only launcher help; `gsd-cli exec claude -- --help` prepares config and launches Claude's help.
 
 A forwarded model/effort argument may override the preset at the child CLI's discretion. `--secure` suppresses automatic bypass only; it does not remove bypass flags you explicitly forward. No credential or model-availability probe runs.
 

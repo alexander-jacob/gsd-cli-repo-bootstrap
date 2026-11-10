@@ -54,3 +54,9 @@ Completion: blocking preflight, independent diagnostic command, explicit policy 
 - Actual-install check in a temporary project: Claude GSD 1.20.1 PASS; Codex GSD 1.18.0 FAIL; exit 1; no project files changed. No GSD code or AI CLI was executed.
 - Built wheel and installed through isolated pipx outside the source checkout: bundled minimum is present; both/one runtime checks have the expected exit codes and leave project files unchanged.
 - Initial shared test setup accidentally made the session reporter's resolver appear installed. Existing session tests caught this; synthetic GSD installations now belong only to launcher initialization fixtures. Production session reporting was not changed.
+
+## Independent review and final verification
+
+The independent review found one important issue and no critical/minor issues in this extension: forwarded Codex directory flags could select another project's old installation after the original project passed its check. Five flag forms were reproduced with failing regression assertions. The fix rejects them before any project writes; tokens after the child's own `--` still forward literally. The full suite now passes **131 tests** on both Python 3.12 and Python 3.10. No second reviewer was used.
+
+Retained decisions: checks cover the selected bundle, not absolute paths in custom skills or every hook/agent file; those must remain aligned separately. The previously disclosed journal/unknown-option diagnostic issues are unchanged. The default 1.20.1 is a project policy choice, so projects can explicitly choose another floor. Verified Codex `-C`/`--cd` forms are rejected, requiring callers to run from the destination project; arbitrary child reconfiguration or actions after startup are not claimed to be prevented.

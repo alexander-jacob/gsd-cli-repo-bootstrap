@@ -43,7 +43,7 @@ Project policy requires `"gsd": {"min_version": "1.20.1"}`. The bundled default 
 
 Every workflow launch checks the selected runtime before capture, recovery or launch logging. An older, missing, unreadable or incomplete GSD installation **blocks launch**. `--secure` does not bypass this gate. `gsd-cli check [claude|codex]` reports installed version, required minimum and installation path; omitting the runtime checks both and exits nonzero if either fails.
 
-Checks are offline and read-only. Explicit `CLAUDE_CONFIG_DIR`/`CODEX_HOME` overrides take precedence, followed by a project-local GSD bundle, then the runtime's global bundle. A broken selected installation does not fall back to another copy. See [version checking](docs/LAUNCHER.md#gsd-version-checks) for discovery and upgrade details.
+Checks are offline and read-only. Explicit `CLAUDE_CONFIG_DIR`/`CODEX_HOME` overrides take precedence, followed by a project-local GSD bundle, then the runtime's global bundle. A broken selected installation does not fall back to another copy. Forwarded Codex `-C`/`--cd` is rejected; run the launcher from the destination project so checks and configuration target the same location. See [version checking](docs/LAUNCHER.md#gsd-version-checks) for discovery and upgrade details.
 
 ## Default policy
 

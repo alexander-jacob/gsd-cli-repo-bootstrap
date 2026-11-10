@@ -361,3 +361,27 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         for args in [('init',), ('status',), ('sessions',), ('--help',), ('check', '--help')]:
             result = self.run_launcher(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_forwarded_codex_directory_switches_block_before_writes(self):
+        self.initialize()
+        from test_versions import install_gsd
+        destination = self.root / 'other-project'
+        install_gsd(destination / '.codex', '1.18.0')
+        before = self.snapshot()
+        for forwarded in (['-C', str(destination)], ['--cd', str(destination)],
+                          ['-C' + str(destination)], ['-C=' + str(destination)],
+                          ['--cd=' + str(destination)]):
+            with self.subTest(forwarded=forwarded):
+                result = self.run_launcher('exec', 'codex', '--', *forwarded)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertIn('destination project', result.stderr)
+                self.assertEqual(self.snapshot(), before)
+                self.assertFalse(self.log.exists())
+                self.assertFalse((self.root / 'state').exists())
+
+    def test_literal_child_prompt_directory_flags_still_forward_unchanged(self):
+        self.initialize()
+        forwarded = ['--', '-C', 'literal prompt', '--cd=also-literal']
+        result = self.run_launcher('exec', 'codex', '--', *forwarded)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.invocation()['args'][-len(forwarded):], forwarded)

@@ -100,6 +100,17 @@ def guard_billing(runtime: str, policy: dict, reviewers: list[str]) -> None:
         raise config.ConfigError('Refusing to launch: OPENAI_API_KEY/CODEX_API_KEY is set; unset it to use ChatGPT login')
 
 
+def guard_project_location(runtime: str, forwarded: list[str]) -> None:
+    if runtime != 'codex':
+        return
+    for arg in forwarded:
+        if arg == '--':
+            break  # Subsequent tokens are literal child positional arguments.
+        if arg == '--cd' or arg.startswith('--cd=') or arg.startswith('-C'):
+            raise config.ConfigError('Codex -C/--cd would change the checked GSD project; '
+                                     'run gsd-cli from the destination project instead of forwarding a directory switch')
+
+
 def workflow_command(name: str):
     @click.command(name, help=f'Open a runtime using the {name} preset. Child options belong after --.')
     @click.argument('runtime', type=click.Choice(RUNTIMES))
@@ -107,6 +118,8 @@ def workflow_command(name: str):
     @click.option('--secure', is_flag=True, help='Suppress the preset permission-bypass flag.')
     @click.pass_context
     def launch(ctx, runtime, level, secure):
+        forwarded = ctx.obj.get('forwarded', [])
+        guard_project_location(runtime, forwarded)
         root = config.discover()
         policy = project_policy(root)
         resolved = resolve(policy, name, runtime, level)
@@ -118,7 +131,6 @@ def workflow_command(name: str):
         if not version.ok:
             raise config.ConfigError(format_result(version) +
                                      f'; launch blocked. Update or repair this installation, then run gsd-cli check {runtime}.')
-        forwarded = ctx.obj.get('forwarded', [])
         data, captured = config.synchronize(root, policy, resolved)
         if captured:
             click.echo('GSD: captured persistent changes: ' + ', '.join(captured), err=True)

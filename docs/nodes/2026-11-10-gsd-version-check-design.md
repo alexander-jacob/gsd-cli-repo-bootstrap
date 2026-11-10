@@ -28,6 +28,10 @@ Inspect `VERSION`, `workflows/update.md`, and `bin/gsd-tools.cjs` in that direct
 
 The installed `bin/lib/update-context.cjs` uses VERSION plus the update workflow marker to establish an installation and recognizes runtime environment overrides and local/global installs. It can fall through to other runtimes, so this launch gate deliberately uses runtime-specific discovery. The extra tool-file check rejects an unusable partial bundle. This checks the selected bundle, not every hook/agent file or the absolute paths embedded in every installed skill. Explicit runtime configuration directories take precedence; users with custom skill paths must keep them aligned.
 
+## Review refinement: child directory changes
+
+The independent review reproduced a supported Codex `-C`/`--cd` option moving the child to a different project's older bundle after the original project passed its check. Reject these options, including attached values, before any project writes. The caller should run gsd-cli from the destination project instead. Tokens after the child's own `--` remain literal positional arguments. Other forwarded tokens remain unchanged. This deliberately limits directory forwarding to keep the configured project and checked bundle aligned; it does not claim to prevent arbitrary runtime reconfiguration after startup.
+
 ## Scope and verification
 
 Use stdlib Python plus existing Click; Python 3.10+, POSIX. Keep installation checks separate from policy validation and Click. No changes to historical session routing or prior deferred findings.
