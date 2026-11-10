@@ -1,8 +1,8 @@
 # Configurable workflow launcher design
 
-Date: 2026-11-10. Status: proposed design, awaiting owner approval.
+Date: 2026-11-10. Status: approved by the owner to proceed with the proposed defaults; implemented on `feat/configurable-launcher`.
 
-Research update: the subsequent [GSD performance and cost audit](2026-11-10-gsd-performance-cost-audit.md) identifies additional effort controls that must be resolved before this design is finalized: Claude session effort is supported, agent effort is independent of model level, installed Claude agent definitions require synchronization, and external review effort is configured separately per adapter. The schema below predates those findings and is not yet a complete effort-policy contract. No configuration changes from the audit have been applied.
+Implementation refinement: runtime levels require `session_effort` for both CLIs. The complete policy additionally owns `agent_efforts`, `reviewer_efforts`, and initialization-only `gsd_defaults`. Audited effort overrides, medium mapper/intel models and compact content are seeded. Claude global agent frontmatter is never changed automatically. See the [implementation plan](2026-11-10-configurable-launcher-plan.md) and [launcher guide](../LAUNCHER.md) for the final schema and behavior. The proposal wording below preserves the decision record.
 
 ## Intent and agreed behavior
 
@@ -21,7 +21,7 @@ The owner selected these behaviors:
 - Use Click for the CLI and package the application for installation through pipx, replacing the single-file copy installation. The owner accepted this dependency and packaging change.
 - Ship a complete default configuration JSON inside the package, used by `gsd-cli init` to initialize a project's launcher policy.
 
-The owner has chosen this direction, not yet approved the detailed schema or implementation decisions below. Items marked “proposed” are assistant decisions for review.
+The owner approved proceeding with these defaults. Items originally marked “proposed” below record builder choices.
 
 ## Goals and boundaries
 

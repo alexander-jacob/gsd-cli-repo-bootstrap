@@ -1,388 +1,70 @@
-# GSD Core multi-CLI launcher
+# GSD workflow launcher
 
-**Use GSD Core across Codex, Claude Code and OpenCode while prioritizing existing ChatGPT and Claude Max subscriptions over pay-as-you-go APIs.**
+Open Claude Code or Codex with project-owned model, effort and external reviewer presets. GSD remains responsible for running its workflows; this launcher configures the session and opens the CLI.
 
-This repository contains a small, Python standard-library-only `gsd-cli` launcher and an example GSD project configuration. It automates runtime selection, task-specific model tiers, and independent AI reviewer presets. It does **not** replace GSD Core or the underlying coding CLIs.
-
-## Design goals
-
-- Use **Codex + ChatGPT subscription** for Astra-led planning, analysis, and optional execution.
-- Use **Claude Code + Claude Max** for Fable-led planning and Opus/Sonnet execution.
-- Run independent reviews from **Claude/Fable** or **Codex/Astra** (subscription-backed), alongside **Grok, Gemini and DeepSeek** through **OpenCode → OpenRouter** (metered).
-- Switch who leads the work without changing reviewer models manually; avoid having a model independently review its *own* plan.
-- Keep model tiers and reviewer definitions persistent, but select planning/execution/review presets per session.
-
-## Architecture
-
-```text
-                         GSD Core project
-                        .planning/config.json
-                                 |
-                              gsd-cli
-                   selects profile and GSD_RUNTIME
-                    /                         \
-          Codex CLI                       Claude Code
-       ChatGPT subscription             Claude Max subscription
-      Astra / Sol / Luna             Fable / Opus / Sonnet
-                    \                         /
-                     \      GSD plan        /
-                       review / convergence
-                                |
-                   +------------+-------------+
-                   |                          |
-        Independent subscription       Metered OpenRouter reviews
-               reviewer                       via OpenCode
-       Fable OR Astra (not author)      Grok / Gemini / DeepSeek
+```sh
+gsd-cli plan codex              # medium is the default
+gsd-cli plan claude high
+gsd-cli exec codex low
+gsd-cli exec claude --secure
+gsd-cli exec codex -- --resume  # child arguments go after --
 ```
 
-**Important:** GSD `opus`, `sonnet` and `haiku` are *tier labels* (high / medium / lower). They do not obligate you to run Claude Opus/Sonnet/Haiku. The mappings below intentionally use `opus → Fable`, `sonnet → Opus`, and `haiku → Sonnet` for Claude.
+Workflow and runtime are always explicit. You can define additional workflow names, such as `ship`, in your project policy. No GSD command is invoked automatically.
 
-### Model tiers
+## Install and initialize
 
-| GSD tier | Claude runtime | Codex runtime |
+Requires Python 3.10+, a POSIX system (Linux/macOS), pipx, Git for Git migration, GSD, and the CLI you intend to launch. Click is installed inside the pipx environment.
+
+```sh
+pipx install /path/to/gsd-cli-repo-bootstrap
+cd /path/to/your/gsd-project
+gsd-cli init
+```
+
+If you installed the old single-file launcher, follow the [replacement instructions](docs/LAUNCHER.md#installation) first. `task install` now uses pipx; copying the `gsd-cli` source wrapper alone no longer works.
+
+`init` loads the complete [bundled JSON policy](gsd_cli/data/default-config.json) through package resources. It preserves compatible legacy model/reviewer settings and leaves the existing working config untouched. Review and commit the generated policy, default and ignore changes. For a previously tracked working config, init stages its removal from the index while keeping the local file. It makes no commit.
+
+| File | Purpose | Git |
 |---|---|---|
-| `opus` (high) | `fable` (Fable 5.1) | `gpt-6-astra` |
-| `sonnet` (medium) | `opus` (Opus 5.5) | `gpt-6.1-sol` |
-| `haiku` (lower) | `sonnet` (Sonnet 5.5) | `gpt-6-luna` |
+| `gsd-cli.config.json` | Complete project model/workflow/reviewer policy | Track |
+| `.planning/config.default.json` | Persistent GSD settings outside launcher ownership | Track |
+| `.planning/config.json` | Effective configuration read and modified by GSD | Ignore |
+| `.planning/.gsd-cli-sync.json` | Local baseline and previous ownership | Ignore |
 
-The Claude entries are **Agent-tool aliases**, not full model IDs: Claude Code spawns subagents only by `fable`/`opus`/`sonnet`/`haiku` (each resolving to the latest model of that family). GSD cannot map a full ID such as `claude-opus-5-5` back to an alias; it warns, drops the value, and the subagent silently inherits the session model — so the tier mapping would have no effect.
+Before each launch, the launcher captures persistent GSD edits into the tracked default. Switching workflows, models or runtimes does not itself change that default. Changes to the default and local config merge when independent; conflicting edits stop the launch and name the affected paths. A private recovery journal protects against interpreting partially completed writes as new user changes.
 
-Codex launches also pass `-c model_reasoning_effort=<effort>` for the session model: the tier's effort (Astra `high`, Sol `medium`, Luna `low`) unless the profile overrides it in `SESSION_EFFORTS` (`codex exec-high` runs its Astra session at `medium`). Without the flag Codex runs Astra at its `medium` default, which is what the orchestrator uses for discuss/plan work it does inline. Claude Code has no equivalent launch flag.
+## Default policy
 
-The `reasoning_effort` in the Codex tier entries reaches only the session. GSD resolves each subagent's effort per agent (its `effort` settings), independent of the tier and of the session: executors, code reviewers and verifiers run at `high`, planners at `xhigh`, plan checkers at `low`.
-
-A top-level CLI session model (`--model`) and the GSD subagent tier mappings are **different settings**. The launcher sets both as appropriate for each profile.
-
-### Reviewer pool
-
-| Name | Adapter | Pinned model | Intended billing |
+| Level | Claude session / agent alias | Codex session / agent model | Session effort |
 |---|---|---|---|
-| `fable-review` | `claude` | `claude-fable-5-1` | Claude Max |
-| `astra-review` | `codex` | `gpt-6-astra` | ChatGPT subscription |
-| `grok-review` | `opencode` | `openrouter/x-ai/grok-4.7` | OpenRouter API |
-| `gemini-review` | `opencode` | `openrouter/google/gemini-4-argon` | OpenRouter API |
-| `deepseek-review` | `opencode` | `openrouter/deepseek/deepseek-v3.2` | OpenRouter API |
+| low | `claude-sonnet-5-5` / `sonnet` | `gpt-6-luna` | low |
+| medium | `claude-opus-5-5` / `opus` | `gpt-6.1-sol` | medium |
+| high | `claude-fable-5-1` / `fable` | `gpt-6-astra` | high |
 
-All five are defined under `review.reviewer_instances`, *not* `review.models`. Their presence does not mean all five run each time: `review.default_reviewers` controls the selected subset. `deepseek-review` is defined but currently not selected by any profile.
+Codex high execution deliberately uses medium **session** effort. Agent effort and reviewer effort are independent. Planning/discussion/research follow the selected plan level; execution follows the selected exec level. Verification stays high, and other phases reset to their explicit defaults each launch. Per-agent pins take precedence over phase levels.
 
-| Who produced the plan? | Selected reviewers |
-|---|---|
-| **Codex / Astra** | Fable + Grok + Gemini |
-| **Claude / Fable** | Astra + Grok + Gemini |
+The [performance/cost audit](docs/nodes/2026-11-10-gsd-performance-cost-audit.md) explains the evidence behind the defaults. Planner/checker/integration/synthesis/security reasoning gets high effort; extraction and mapping use lower or medium effort. Mapper and intel models use medium; compact GSD content is seeded on initialization. These are reasoned starting choices, not measured quality or cost guarantees.
 
-`review.parallel_lanes` stays `false`: reviews execute sequentially, which is simpler for rate limits and billing. The OpenCode reviewer instances can be expanded independently as new models become available.
+Claude launches now pass `--effort`. **Claude subagent effort also depends on installed agent frontmatter**: project config alone does not update it. The launcher warns and never modifies your global agent definitions. See the [effort synchronization instructions](docs/LAUNCHER.md#effort-and-gsd-routing).
 
-## Repository contents
+Each preset explicitly selects the opposite runtime's reviewer plus Grok and Gemini. DeepSeek is defined but inactive. Reviewers remain independent of the selected model level. This choice does not detect who authored an earlier plan; configure another preset if you need a different roster. OpenCode/OpenRouter reviewers are metered.
 
-```text
-.
-├── README.md                         # This document
-├── gsd-cli                           # Executable Python 3 launcher
-├── examples/
-│   └── gsd-config-example.json       # GSD config fragment/example
-├── docs/
-│   └── LAUNCHER.md                   # Detailed installation and operation
-├── tests/
-│   ├── session_fixtures.py          # Fake Claude/Codex logs for the sessions tests
-│   ├── test_gsd_cli.py              # Python unittest tests (no dependencies)
-│   └── test_sessions.py             # Tests for gsd-cli sessions
-└── .gitignore
-```
+Claude planning uses normal permissions; Codex planning and both execution presets bypass approval prompts by default. `--secure` suppresses the launcher-inserted bypass. Custom workflows must state permissions explicitly. Billing guards check environment variables for both the session and selected reviewer adapters.
 
-## Prerequisites
+## Inspection and development
 
-- Python 3.10+ for the launcher (standard library only).
-- Node.js and `npx` for the GSD Core installer.
-- Installed `claude`, `codex`, and `opencode` CLIs available on `PATH`.
-- Claude Code authenticated through **Claude Max**, Codex authenticated through **ChatGPT**, and OpenCode configured for **OpenRouter**.
-- A target GSD project with `.planning/config.json` already created (for example using GSD's new-project or onboarding flow).
-
-> Model IDs, CLI options, plan entitlements and GSD schema can change. Check your installed CLIs' model lists and the upstream GSD documentation before running paid review batches. This repository documents an intended configuration; it cannot guarantee provider availability or subscription billing.
-
-## Install GSD Core in each CLI
-
-Recommended global installation for GSD workflows in any project:
-
-```bash
-# Claude Code
-npx @opengsd/gsd-core@latest --claude --global
-
-# Codex CLI
-npx @opengsd/gsd-core@latest --codex --global
-
-# OpenCode
-npx @opengsd/gsd-core@latest --opencode --global
-```
-
-Alternatively, from a project root, replace `--global` with `--local` to install under `.claude/`, `.codex/`, and `.opencode/` respectively. Restart each CLI after installation. For **external reviews only**, OpenCode merely needs to be installed/authenticated; its GSD command installation is optional.
-
-Authenticate and check:
-
-```bash
-claude --version
-codex --version
-codex login status
-opencode --version
-opencode models openrouter
-```
-
-Inside Claude Code, `/status` should indicate subscription authentication. Avoid setting `ANTHROPIC_API_KEY` when intending to use Claude Max; likewise avoid API-key overrides when intending to use ChatGPT-backed Codex.
-
-## Install the launcher
-
-From this repository:
-
-```bash
-task install
-```
-
-This requires Task. To install manually:
-
-```bash
-mkdir -p ~/.local/bin
-cp ./gsd-cli ~/.local/bin/gsd-cli
-chmod +x ~/.local/bin/gsd-cli
-```
-
-Ensure `~/.local/bin` is on `PATH` (e.g. in `~/.bashrc`):
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Use `~/.local/bin`, **not the target project's root** and not `/usr/local/bin`, unless you intentionally want system-wide deployment. The launcher is global to your Linux user, but reads/writes each project's own `.planning/config.json`.
-
-## Initialize a GSD project
-
-Create or onboard a project with the standard GSD commands first:
-
-```text
-Claude Code: /gsd-new-project      (existing repo: /gsd-onboard)
-Codex CLI:  $gsd-new-project      (existing repo: $gsd-onboard)
-```
-
-Once `.planning/config.json` exists, run from the project root (or a descendant):
-
-```bash
-cd ~/projects/my-project
-gsd-cli init            # or: gsd-cli init codex
+```sh
 gsd-cli status
+gsd-cli sessions [claude|codex] [--pick [N]]
+
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+python -m unittest discover -s tests -v
 ```
 
-`init` **merges** the launcher's policy into your current project config and preserves unrelated settings:
+Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
 
-- `model_policy.runtime_tiers`: Claude tiers as Agent-tool aliases (`fable` / `opus` / `sonnet`), Codex tiers as full IDs with reasoning effort (Astra / Sol / Luna).
-- `models`: `planning`, `discuss`, `research` and `verification` on the `opus` tier, `execution` on `sonnet` — the same values the `plan` and `exec-opus` profiles set, so a project is consistent before its first launch. Existing values are kept.
-- `model_overrides`: the per-agent tier pins (see below), materialized for the runtime given as argument (default `claude`). Every launch rewrites them for its own runtime.
-- `review`: five reviewer instances and the initial default reviewers (Fable + OpenRouter).
-- Removes an explicit top-level `runtime` so `GSD_RUNTIME` can select the runtime per session.
-
-See [the complete example](examples/gsd-config-example.json).
-
-This is a **configuration example/merge**, not a recommendation to replace an existing `.planning/config.json` wholesale.
-
-## Launcher profiles
-
-| Command | Top-level CLI model | GSD agent setting changed | Reviewer preset |
-|---|---|---|---|
-| `gsd-cli codex plan` | Astra | planning/discuss/research = `opus` | Fable + 3 OpenRouter |
-| `gsd-cli claude plan` | Fable | planning/discuss/research = `opus` | Astra + 3 OpenRouter |
-| `gsd-cli claude exec-opus` | Opus 5.5 | execution = `sonnet`, verification = `opus` | preserved |
-| `gsd-cli claude exec-sonnet` | Sonnet 5.5 | execution = `haiku`, verification = `opus` | preserved |
-| `gsd-cli codex exec-high` | Astra | execution = `opus` | preserved |
-| `gsd-cli codex exec-medium` | Sol | execution = `sonnet` | preserved |
-| `gsd-cli codex exec-low` | Luna | execution = `haiku` | preserved |
-| `gsd-cli codex review-claude-plan` | Astra | none | Astra + 3 OpenRouter |
-| `gsd-cli claude review-codex-plan` | Fable | none | Fable + 3 OpenRouter |
-
-### What each profile runs
-
-Effective models and efforts, as resolved by GSD (`gsd-tools query resolve-model <agent>`) after the launch, with the launcher's defaults from `init`. **Session** is the top-level CLI you talk to; **Doing** is the subagents that do the profile's work; **Review** is who checks that work: the code reviewer and verifier for execution profiles, the external reviewers for planning and review profiles.
-
-**Claude**
-
-| Profile | Session | Doing | Review |
-|---|---|---|---|
-| `claude plan` | Fable | planner Fable · xhigh, researcher Fable · high, plan checker Fable · low | Astra, Grok, Gemini |
-| `claude exec-opus` | Opus 5.5 | executor Opus · high | code reviewer + verifier Fable · high |
-| `claude exec-sonnet` | Sonnet 5.5 | executor Sonnet · high | code reviewer + verifier Fable · high |
-| `claude review-codex-plan` | Fable | session runs the reviewers | Fable, Grok, Gemini |
-| `claude review-claude-plan` | Opus 5.5 | session runs the reviewers | Astra, Grok, Gemini |
-
-The launcher passes no effort to Claude sessions. Subagent efforts are what GSD resolves and hands to Claude Code; per-agent effort has been observed in Codex session logs only.
-
-**Codex**
-
-| Profile | Session | Doing | Review |
-|---|---|---|---|
-| `codex plan` | Astra · high | planner Astra · xhigh, researcher Astra · high, plan checker Astra · low | Fable, Grok, Gemini |
-| `codex exec-high` | Astra · medium | executor Astra · high | code reviewer + verifier Astra · high ¹ |
-| `codex exec-medium` | Sol · medium | executor Sol · high | code reviewer + verifier Astra · high ¹ |
-| `codex exec-low` | Luna · low | executor Luna · high | code reviewer + verifier Astra · high ¹ |
-| `codex review-codex-plan` | Astra · high | session runs the reviewers | Fable, Grok, Gemini |
-| `codex review-claude-plan` | Astra · high | session runs the reviewers | Astra, Grok, Gemini |
-
-¹ Codex execution profiles do not set `models.verification`; they inherit the project value (`opus` → Astra after `init`). Claude execution profiles pin it to `opus` (Fable).
-
-An execution session only orchestrates (waves, executor summaries, checkpoints); the code is written by executors with their own effort, so `codex exec-high` runs the orchestrator at `medium`.
-
-### Per-agent tier pins
-
-GSD phase types are broad: `research` also covers the intel updater and codebase mapper, `verification` also covers the test-writing Nyquist auditor. The launcher carries a small `AGENT_TIERS` table (in `gsd-cli`) that pins such mechanical agents to a lower tier, keyed by GSD tier word:
-
-| Agent | Tier | Claude / Codex |
-|---|---|---|
-| `gsd-nyquist-auditor`, `gsd-integration-checker`, `gsd-pattern-mapper`, `gsd-doc-verifier`, `gsd-research-synthesizer` | `sonnet` (medium) | Opus / Sol |
-| `gsd-codebase-mapper`, `gsd-intel-updater`, `gsd-doc-classifier`, `gsd-user-profiler`, `gsd-mempalace-curator` | `haiku` (lower) | Sonnet / Luna |
-
-Every launch materializes this table into `model_overrides` **for the launched runtime** — Claude gets Agent-tool aliases, Codex gets full model IDs — because GSD applies `model_overrides` values verbatim and has no per-runtime translation of its own. Override keys the launcher does not manage are preserved. Planners, researchers, the code reviewer and the verifier are deliberately not pinned: they follow `models.<phase_type>` and stay on the high tier.
-
-`research` covers the phase/project researcher agents, which GSD otherwise routes to the medium tier; the plan profiles lift them to the high tier so research runs on the same model as planning. `verification` covers the GSD code reviewer and verifier agents that run after execution. The Claude execution profiles pin it to the `opus` tier so the post-execution review always runs on Fable, independent of the execution tier.
-
-The two review profiles also work with the opposite runtime; see `gsd-cli --help` or [the launcher reference](docs/LAUNCHER.md). **The review preset follows the author of the plan, not the CLI used to run the review.**
-
-Execution and review profiles and `gsd-cli codex plan` **skip permission prompts by default**: the launcher passes `--dangerously-skip-permissions` to Claude or `--dangerously-bypass-approvals-and-sandbox` to Codex, which also disables Codex's sandbox (see [OpenAI's approval documentation](https://learn.chatgpt.com/docs/agent-approvals-security)). This allows execution, reviews, and Codex planning to run unattended; only launch them on a repository you intend to grant that access to. Pass `--secure` before the optional `--` separator to keep the CLI's own permission prompts:
-
-```bash
-gsd-cli claude exec-opus --secure
-gsd-cli codex plan --secure
-gsd-cli codex exec-high --secure -- --no-alt-screen
-gsd-cli codex review-codex-plan --secure
-```
-
-Claude planning keeps the CLI's normal permissions (`--secure` is accepted there and has no effect). Subscription billing guards apply in both modes. Arguments after `--` are forwarded unchanged.
-
-### Workflow A — Astra plans, Claude executes
-
-```bash
-# Start Codex with Astra; inside Codex discuss/plan/review the phase
-gsd-cli codex plan
-# $gsd-discuss-phase 1
-# $gsd-plan-phase 1     OR $gsd-plan-review-convergence 1
-
-# After exiting Codex, start Claude with Opus 5.5
-gsd-cli claude exec-opus
-# /gsd-execute-phase 1
-
-# Optionally verify in Codex / Astra
-gsd-cli codex review-codex-plan
-# $gsd-verify-work 1
-```
-
-The review subset for Codex-authored plans is Fable, Grok and Gemini. Execution preserves that subset.
-
-### Workflow B — Fable plans, Codex executes
-
-```bash
-# Fable-led planning; selected reviewers: Astra + OpenRouter
-gsd-cli claude plan
-# /gsd-discuss-phase 1
-# /gsd-plan-review-convergence 1
-
-# Run implementation in Codex / Astra (or exec-medium for Sol)
-gsd-cli codex exec-high
-# $gsd-execute-phase 1
-```
-
-### Explicitly choose the reviewer preset later
-
-```bash
-# Reviewing a Claude/Fable-authored plan from Codex
-gsd-cli codex review-claude-plan
-
-# Reviewing a Codex/Astra-authored plan from Claude
-gsd-cli claude review-codex-plan
-```
-
-Inside the CLI, invoke the appropriate GSD review command, e.g. `$gsd-review --phase 1` in Codex or `/gsd-review --phase 1` in Claude Code. GSD external review examines phase plans. A separate GSD code review is not automatically the same four-model reviewer ensemble.
-
-### Checking what a session actually ran
-
-`gsd-cli sessions` is a read-only report on what Claude Code and Codex really did in this project. It reads the runtimes' own session logs (`~/.claude/projects/` and `~/.codex/sessions/`), never writes to them or to the project, and shows the model and reasoning effort of each session, subagent and cross-AI reviewer run. This catches the silent failure where a bad tier entry makes every subagent inherit the session model.
-
-```bash
-gsd-cli sessions                # the three newest sessions of this project
-gsd-cli sessions codex          # only Codex (or: claude)
-gsd-cli sessions --pick         # list older sessions; prompts for a number on a terminal
-gsd-cli sessions --pick 2       # show the 2nd older session (1 = the fourth newest)
-```
-
-The `--pick` list shows only each older session's summary line; it carries no mismatch marks, since the checks run only for the session you then pick.
-
-Run it in the project or any subdirectory. Sample output:
-
-```text
-claude  2026-10-29 14:05  profile: exec-opus  claude-opus-5-5  medium  advisor claude-fable-5-1
-  gsd-executor  asked sonnet  ran claude-sonnet-5-5/high
-  gsd-verifier  asked sonnet  ran claude-opus-5-5/high  ! asked sonnet, ran claude-opus-5-5  ! profile expects sonnet
-  reviewer fable-review  ran claude-opus-5-5  ! fable-review expects claude-fable-5-1
-  gsd-planner  asked opus  ran claude-opus-5-5/high
-codex   2026-10-28 09:30  profile: plan  gpt-6-astra  high
-```
-
-Each session line shows runtime, start time (local), the launching profile, session model, effort (`<effort> (varied)` if it changed during the session) and the Claude advisor model if one was recorded. Indented lines are subagents (`asked` is what the agent requested, `ran` is what the log recorded) and cross-AI reviewer runs, which are nested under the session that triggered them. A reviewer run that overlaps no session is listed on its own, marked `reviewer, unattached`.
-
-Two kinds of mismatch are flagged with `!`:
-
-- **Requested vs. actual:** `! asked sonnet, ran claude-opus-5-5`. The agent asked for one model and ran on another. Reviewers are compared against the `REVIEWERS` table (`! fable-review expects claude-fable-5-1`).
-- **Profile vs. actual:** `! profile expects sonnet` or `! profile expects effort high`. The session or agent did not get what the launching profile should have given it. Expected agent values come from the real GSD resolver run against the config snapshot recorded at launch, not from the current config or the launcher tables. Claude is compared by model family; Claude session effort is shown but not compared, since Claude Code has no launch flag for it.
-
-Other marks: `overridden at launch` (your forwarded arguments set their own `--model` or `model_reasoning_effort`, so the profile comparison is skipped) and `resumed, profile may differ` (a later launch resumed the session).
-
-To tie a session to its profile, every runtime-profile launch appends one JSON line to `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (default `~/.local/state/gsd-cli/launches.jsonl`): time, project, runtime, profile, session model and effort, forwarded arguments, a snapshot of the project config as written for the launch, and `~/.gsd/defaults.json` if present. The log is created with mode 0600, since it embeds whole configs. `sessions` matches a session to the latest launch of the same project and runtime within 60 seconds before it started (for Codex, the creation time from the rollout's `session_meta`, which can precede the first logged prompt by minutes). A Claude session started by `/clear` inside a running CLI inherits the launch of the previous session of that project, unless a newer launch of the same runtime came in between. Sessions without a match show `profile: unknown` and skip the profile comparison (requested vs. actual still runs). A failed log write only prints a warning; it never stops the launch.
-
-If node or the GSD resolver (`~/.claude/gsd-core/bin/gsd-tools.cjs`) is missing or fails, only requested vs. actual is checked and the output ends with `note: GSD resolver not available; profile comparison skipped`.
-
-## How the launcher works
-
-1. Finds `.planning/config.json` in the current directory or an ancestor.
-2. Loads project settings, merges/updates only selected fields, and atomically replaces the JSON file on changes: the profile's `models.<phase_type>` tiers, and `model_overrides` materialized from `AGENT_TIERS` for the launched runtime.
-3. During `plan` selection, chooses the independent reviewer preset; during `exec-*`, **retains the current reviewer list**.
-4. Refuses to start if an API-key environment variable would override subscription authentication for the runtime or a selected reviewer.
-5. Sets `GSD_RUNTIME` for the child CLI process (`codex` or `claude`), rather than relying on installation markers or modifying a shared `runtime` field.
-6. Appends one record to the launch log (`~/.local/state/gsd-cli/launches.jsonl`) so `gsd-cli sessions` can tie the session to its profile; a failed write only warns.
-7. Starts the CLI with `--model <session-model>`, plus `-c model_reasoning_effort=<session effort>` for Codex (profile override, else tier effort), plus the permission-bypass flag for every profile except Claude planning unless `--secure` was given.
-
-Example with extra CLI options:
-
-```bash
-gsd-cli codex plan -- --help
-```
-
-The launcher currently starts Claude or Codex, **not OpenCode as an interactive primary runtime**. GSD invokes OpenCode separately for paid review lanes.
-
-## Billing and security
-
-- **Claude Max:** The `claude` adapter uses the local authenticated Claude Code CLI; confirm it is logged into your subscription. A model ID alone does not guarantee subscription-backed execution.
-- **ChatGPT:** The `codex` adapter uses local Codex; sign in with ChatGPT and confirm `codex login status`.
-- **OpenRouter:** Grok, Gemini and DeepSeek are billed per the OpenRouter account's usage and model prices.
-- The launcher refuses to launch subscription-backed sessions/review presets if it detects conflicting `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `CODEX_API_KEY` environment variables. This check is only a safety guard; inspect your CLI's active authentication settings too.
-- Neither credentials nor authentication tokens are included in this repository. Never commit API keys or CLI auth files.
-
-## Limitations / operational notes
-
-- The launcher mutates **shared** `.planning/config.json` project settings. This is suitable for sequential handoffs. It is **not** safe to assume isolated settings for simultaneous write-capable sessions in the same checkout. Use separate worktrees/projects for that scenario.
-- Atomic JSON replacement prevents partial files but does **not** implement a multi-process configuration lock or eliminate lost updates from concurrent writes.
-- Every launch rewrites the runtime-specific parts of `config.json` (`models.execution`, `model_overrides`), so the file shows a diff after each runtime switch. Commit it as "whichever CLI ran last" or leave it uncommitted; it carries no information beyond the launcher's tables.
-- Some GSD installations (notably OpenCode and certain Codex-generated agent definitions) use install-time/static model configuration. Changing the tier mappings may require reinstalling/syncing the relevant GSD runtime artifacts.
-- Review instances reuse the same OpenCode adapter; these are separate model opinions, not four independently authenticated CLI installations.
-- Do not use `/gsd-review --all` unintentionally: it may run reviewers outside the selected defaults and incur additional charges.
-- Model quality rankings and provider catalogs change. This repo records **your selected preferences**, not an objective guarantee that one model is superior for every task.
-- `gsd-cli init` requires an existing `.planning/config.json`; it does not bootstrap an application project from nothing.
-
-## Tests
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Tests use temporary project directories and stub CLI executables. They do **not** spend API tokens, install GSD, or validate actual upstream model availability.
-
-## Upstream documentation
-
-- [GSD Core repository](https://github.com/open-gsd/gsd-core)
-- [GSD Core configuration reference](https://github.com/open-gsd/gsd-core/blob/next/docs/CONFIGURATION.md)
-- [Install GSD Core on your runtime](https://github.com/open-gsd/gsd-core/blob/next/docs/how-to/install-on-your-runtime.md)
-- [Cross-AI review setup](https://github.com/open-gsd/gsd-core/blob/next/docs/how-to/set-up-cross-ai-review.md)
-
-This repository is a personal orchestration wrapper around GSD Core, not an official GSD project.
+The [launcher guide](docs/LAUNCHER.md) covers configuration, migration, recovery and custom workflows. The [project assessment](docs/nodes/2026-11-10-project-assessment.md) records strengths and weaknesses of the original version; [implementation design](docs/nodes/2026-11-10-configurable-launcher-design.md) records the agreed direction.

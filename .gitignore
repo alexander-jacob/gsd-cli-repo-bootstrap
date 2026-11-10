@@ -16,3 +16,8 @@ venv/
 
 # Developer-specific project state (if a GSD project is initialized here)
 .planning/
+
+# Package build artifacts
+build/
+dist/
+*.egg-info/
