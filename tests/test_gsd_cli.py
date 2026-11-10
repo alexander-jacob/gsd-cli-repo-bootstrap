@@ -42,7 +42,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
             cli.write_text(stub, encoding="utf-8")
             cli.chmod(0o755)
         self.env = os.environ.copy()
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "GSD_RUNTIME"):
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "GSD_RUNTIME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
             self.env.pop(key, None)
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env.get("PATH", "")
         self.env["GSD_TEST_LOG"] = str(self.log)
@@ -73,6 +73,11 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
     def initialize(self):
+        # Only launcher tests need installed-GSD fixtures. Session reader tests
+        # reuse setUp and intentionally test missing resolver installations.
+        from test_versions import install_gsd
+        for runtime in ('claude', 'codex'):
+            install_gsd(self.home / f'.{runtime}')
         result = self.run_launcher("init")
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -249,3 +254,110 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('gsd-cli init', result.stderr)
         self.assertEqual(self.snapshot(), before)
+
+    def test_check_reports_both_runtimes_read_only_and_fails_if_one_is_old(self):
+        self.initialize()
+        (self.home / '.codex/gsd-core/VERSION').write_text('1.18.0\n')
+        before = self.snapshot()
+        result = self.run_launcher('check')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        for value in ('claude', 'codex', '1.20.1', '1.18.0', 'PASS', 'FAIL', str(self.home / '.codex/gsd-core')):
+            self.assertIn(value, result.stdout)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / 'state').exists())
+        self.assertEqual(self.run_launcher('check', 'claude').returncode, 0)
+        self.assertEqual(self.run_launcher('check', 'codex').returncode, 1)
+
+    def test_unsupported_gsd_blocks_before_capture_recovery_logs_or_exec(self):
+        self.initialize()
+        (self.project / '.planning/.gsd-cli.lock').unlink()
+        w = self.config()
+        w['pending_capture'] = True
+        self.config_path.write_text(json.dumps(w))
+        # A pending journal must not be replayed or even parsed by this failure.
+        (self.project / '.planning/.gsd-cli-journal.json').write_text('pending recovery')
+        (self.home / '.codex/gsd-core/VERSION').write_text('1.18.0')
+        before = self.snapshot()
+        for extra in ((), ('--secure',)):
+            result = self.run_launcher('exec', 'codex', *extra)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('1.18.0', result.stderr)
+            self.assertIn('1.20.1', result.stderr)
+            self.assertIn('gsd-cli check codex', result.stderr)
+            self.assertEqual(self.snapshot(), before)
+            self.assertFalse((self.project / '.planning/.gsd-cli.lock').exists())
+            self.assertFalse(self.log.exists())
+            self.assertFalse((self.root / 'state').exists())
+        result = self.run_launcher('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('1.18.0', result.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_check_does_not_require_cli_executables_or_node(self):
+        self.initialize()
+        env = {**self.env, 'PATH': ''}
+        result = self.run_launcher('check', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PASS', result.stdout)
+
+    def test_missing_malformed_and_incomplete_gsd_block_launch(self):
+        self.initialize()
+        version = self.home / '.codex/gsd-core/VERSION'
+        before = self.snapshot()
+        for content in (None, 'invalid', '1.20.1-rc.1'):
+            if content is None:
+                version.unlink()
+            else:
+                version.write_text(content)
+            result = self.run_launcher('exec', 'codex')
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(self.snapshot(), before)
+            self.assertFalse(self.log.exists())
+        version.write_text('1.20.1')
+        (self.home / '.codex/gsd-core/bin/gsd-tools.cjs').unlink()
+        self.assertEqual(self.run_launcher('exec', 'codex').returncode, 1)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_project_floor_is_authoritative_and_old_other_runtime_does_not_block(self):
+        self.initialize()
+        p = self.policy()
+        p['gsd'] = {'min_version': '1.18.0'}
+        self.put_policy(p)
+        (self.home / '.codex/gsd-core/VERSION').write_text('1.18.0')
+        (self.home / '.claude/gsd-core/VERSION').write_text('1.0.0')
+        result = self.run_launcher('exec', 'codex')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.policy()['gsd']['min_version'], '1.18.0')
+
+    def test_check_from_descendant_honors_relative_override(self):
+        self.initialize()
+        from test_versions import install_gsd
+        selected = install_gsd(self.project / 'config-root', '1.18.0')
+        nested = self.project / 'src'
+        nested.mkdir()
+        env = {**self.env, 'CODEX_HOME': 'config-root'}
+        result = self.run_launcher('check', 'codex', cwd=nested, env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(selected), result.stdout)
+        self.assertIn('1.18.0', result.stdout)
+
+    def test_old_project_policy_requires_explicit_version_field(self):
+        self.initialize()
+        p = self.policy()
+        p.pop('gsd', None)
+        self.put_policy(p)
+        before = self.snapshot()
+        for args in [('exec', 'codex'), ('check',), ('init',)]:
+            result = self.run_launcher(*args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('gsd.min_version', result.stderr)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_maintenance_commands_remain_available_with_old_gsd(self):
+        self.initialize()
+        (self.home / '.codex/gsd-core/VERSION').write_text('1.0.0')
+        (self.home / '.claude/gsd-core/VERSION').write_text('1.0.0')
+        for args in [('init',), ('status',), ('sessions',), ('--help',), ('check', '--help')]:
+            result = self.run_launcher(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)

@@ -19,6 +19,7 @@ To update a local installation, use `pipx install --force /absolute/path/to/gsd-
 ```text
 gsd-cli init
 gsd-cli status
+gsd-cli check [claude|codex]
 gsd-cli sessions [claude|codex] [--pick [N]]
 gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [-- CHILD_ARGS...]
 ```
@@ -28,6 +29,39 @@ Workflow and runtime are mandatory; level defaults to medium. Old runtime-first 
 The first literal `--` separates launcher arguments from child arguments. Everything after it is forwarded unchanged, including another `--`, `--help`, `--secure` or `--model`. Before it, unknown options are errors. `gsd-cli exec --help` is read-only launcher help; `gsd-cli exec claude -- --help` prepares config and launches Claude's help.
 
 A forwarded model/effort argument may override the preset at the child CLI's discretion. `--secure` suppresses automatic bypass only; it does not remove bypass flags you explicitly forward. No credential or model-availability probe runs.
+
+## GSD version checks
+
+The complete project policy must include:
+
+```json
+"gsd": {
+  "min_version": "1.20.1"
+}
+```
+
+This is the bundled default floor, editable for your project's requirements. It does not assert that every earlier GSD version is incompatible. If you initialized a policy before this field existed, add it to `gsd-cli.config.json` deliberately; init and launches report the missing field instead of adding a hidden default or replacing your policy.
+
+```sh
+gsd-cli check          # report Claude and Codex
+gsd-cli check codex    # one runtime
+```
+
+Each report includes PASS/FAIL, installed GSD version, required minimum, installation path and failure reason. Exit status is 0 when all requested checks pass and 1 for an unmet requirement. Check does not require Node or either AI CLI executable, access the network, run GSD code, update installations, capture changes, replay recovery or write logs.
+
+Before a workflow opens a runtime, the same check blocks unsupported installations **before any configuration writes**, including lock/journal recovery. Only the launched runtime is gated; external reviewer CLI adapters do not themselves require that runtime's GSD installation. Help, status, sessions and init remain usable with old/missing GSD. `--secure` changes permission flags only and cannot bypass the version gate.
+
+Discovery is runtime-specific, starting from the discovered project root:
+
+1. Explicit `CLAUDE_CONFIG_DIR` or `CODEX_HOME` selects that runtime's config directory. A leading `~` expands to home; relative directories resolve against the project root, which is also the launched CLI's working directory.
+2. Otherwise a project `.claude/gsd-core` or `.codex/gsd-core` takes precedence when present.
+3. Otherwise the corresponding `~/.claude/gsd-core` or `~/.codex/gsd-core` is checked.
+
+An explicit missing directory, malformed version, or incomplete local bundle blocks; it never borrows a global copy or the other runtime's version. The bundle must contain a readable, bounded regular `VERSION` file and regular `workflows/update.md` / `bin/gsd-tools.cjs` files. This checks the selected bundle; it does not verify every hook/agent file or absolute workflow paths embedded in custom skills. Keep custom skill paths aligned with the selected installation.
+
+Versions use [SemVer 2.0.0 precedence](https://semver.org/spec/v2.0.0.html): numeric components compare numerically, build metadata does not affect precedence, and `1.20.1-rc.1` is below `1.20.1`. Partial versions, a `v` prefix and malformed identifiers are rejected. A newer prerelease such as `1.21.0-rc.1` satisfies a `1.20.1` floor; a minimum is not a stable-only release policy.
+
+On failure, update or repair the **reported installation** through GSD's update workflow and rerun check. No automatic update is performed. At implementation time this machine's Claude GSD reports 1.20.1 (passes the default) and Codex GSD reports 1.18.0 (blocked by the default). Both have update-check hooks; notification visibility alone does not establish why their versions differ.
 
 ## Initialization and migration
 
@@ -48,6 +82,7 @@ The complete example is [examples/gsd-config-example.json](../examples/gsd-confi
 | Field | Contract |
 |---|---|
 | `schema_version` | `1` |
+| `gsd.min_version` | Required complete SemVer minimum; default `1.20.1`; blocks unsupported launches |
 | `runtimes` | Both runtimes; all three levels; `session_model`, `agent_model`, `session_effort` required |
 | `phase_defaults` | Explicit levels for planning, discuss, research, execution and verification |
 | `agent_levels` | Per-agent level pins; translated for the selected runtime |
@@ -112,7 +147,7 @@ Default-only edits propagate locally. A missing working file is recreated. A fre
 
 Writes use individual atomic replacements and a private `.planning/.gsd-cli-journal.json`; the set of files is **not** one atomic filesystem transaction. The next mutating operation resumes an interrupted transaction only if each target still matches its recorded before/after content. If an external edit prevents replay, preserve copies of the edited files and journal, compare the target with the journal's before/after versions, and reconcile intentionally before retrying. Do not delete the journal and then let partial state masquerade as a normal edit.
 
-The short `.gsd-cli.lock` protects preparation, not a running AI session. Use separate worktrees for simultaneous sessions with different presets. Help, status and sessions do not recover, capture or write config. `status` reports whether recovery is pending.
+The short `.gsd-cli.lock` protects preparation, not a running AI session. Use separate worktrees for simultaneous sessions with different presets. Help, status, check and sessions do not recover, capture or write config. `status` reports whether recovery is pending.
 
 ## Billing and history
 

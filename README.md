@@ -8,6 +8,8 @@ gsd-cli plan claude high
 gsd-cli exec codex low
 gsd-cli exec claude --secure
 gsd-cli exec codex -- --resume  # child arguments go after --
+gsd-cli check                  # verify both GSD installations
+gsd-cli check codex            # verify only Codex GSD
 ```
 
 Workflow and runtime are always explicit. You can define additional workflow names, such as `ship`, in your project policy. No GSD command is invoked automatically.
@@ -34,6 +36,14 @@ If you installed the old single-file launcher, follow the [replacement instructi
 | `.planning/.gsd-cli-sync.json` | Local baseline and previous ownership | Ignore |
 
 Before each launch, the launcher captures persistent GSD edits into the tracked default. Switching workflows, models or runtimes does not itself change that default. Changes to the default and local config merge when independent; conflicting edits stop the launch and name the affected paths. A private recovery journal protects against interpreting partially completed writes as new user changes.
+
+## GSD minimum version
+
+Project policy requires `"gsd": {"min_version": "1.20.1"}`. The bundled default uses 1.20.1 as an editable project requirement, not a proven technical compatibility minimum. Older project policies must add this field explicitly; upgrades never overwrite their policy.
+
+Every workflow launch checks the selected runtime before capture, recovery or launch logging. An older, missing, unreadable or incomplete GSD installation **blocks launch**. `--secure` does not bypass this gate. `gsd-cli check [claude|codex]` reports installed version, required minimum and installation path; omitting the runtime checks both and exits nonzero if either fails.
+
+Checks are offline and read-only. Explicit `CLAUDE_CONFIG_DIR`/`CODEX_HOME` overrides take precedence, followed by a project-local GSD bundle, then the runtime's global bundle. A broken selected installation does not fall back to another copy. See [version checking](docs/LAUNCHER.md#gsd-version-checks) for discovery and upgrade details.
 
 ## Default policy
 

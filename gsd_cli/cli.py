@@ -8,6 +8,7 @@ import click
 
 from . import config, sessions
 from .policy import LEVELS, RUNTIMES, PolicyError, resolve, validate
+from .versions import VersionError, check_installation, format_result
 
 
 def project_policy(root: Path) -> dict:
@@ -70,6 +71,20 @@ def status_command():
                                  'config': data}), nl=False)
 
 
+@cli.command('check')
+@click.argument('runtime', type=click.Choice(RUNTIMES), required=False)
+def check_command(runtime):
+    """Check installed GSD against project requirements (both runtimes by default)."""
+    root = config.discover()
+    policy = project_policy(root)
+    results = [check_installation(root, rt, policy['gsd']['min_version'])
+               for rt in ((runtime,) if runtime else RUNTIMES)]
+    for result in results:
+        click.echo(format_result(result))
+    if any(not result.ok for result in results):
+        raise click.ClickException('GSD requirements not met. Update or repair the reported installation, then rerun gsd-cli check.')
+
+
 @cli.command('sessions', context_settings={'ignore_unknown_options': True, 'allow_extra_args': True})
 @click.argument('args', nargs=-1, type=click.UNPROCESSED)
 def sessions_command(args):
@@ -99,6 +114,10 @@ def workflow_command(name: str):
         if executable is None:
             raise config.ConfigError(f"Cannot find CLI '{runtime}' on PATH")
         guard_billing(runtime, policy, resolved['reviewers'])
+        version = check_installation(root, runtime, policy['gsd']['min_version'])
+        if not version.ok:
+            raise config.ConfigError(format_result(version) +
+                                     f'; launch blocked. Update or repair this installation, then run gsd-cli check {runtime}.')
         forwarded = ctx.obj.get('forwarded', [])
         data, captured = config.synchronize(root, policy, resolved)
         if captured:
@@ -130,7 +149,7 @@ def main():
     if '--' in args:
         split = args.index('--')
         args, forwarded = args[:split], args[split + 1:]
-        if not args or args[0] in ('init', 'status', 'sessions', 'help'):
+        if not args or args[0] in ('init', 'status', 'sessions', 'check', 'help'):
             click.echo('Error: forwarding after -- is supported only for workflow launches', err=True)
             raise SystemExit(2)
     try:
@@ -138,6 +157,6 @@ def main():
     except click.ClickException as exc:
         exc.show()
         raise SystemExit(exc.exit_code) from exc
-    except (config.ConfigError, PolicyError, OSError) as exc:
+    except (config.ConfigError, PolicyError, VersionError, OSError) as exc:
         click.echo(f'Error: {exc}', err=True)
         raise SystemExit(1) from exc
