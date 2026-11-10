@@ -76,271 +76,176 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         result = self.run_launcher("init")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_init_merges_without_erasing_existing_settings(self):
-        self.initialize()
-        config = self.config()
-        self.assertEqual(config["custom"], {"keep": True})
-        self.assertNotIn("runtime", config)
-        # Claude tiers must be Agent-tool aliases, not full IDs (GSD cannot map
-        # a full ID back to an alias and would spawn subagents with no model).
-        claude_tiers = config["model_policy"]["runtime_tiers"]["claude"]
-        self.assertEqual({tier: entry["model"] for tier, entry in claude_tiers.items()},
-                         {"opus": "fable", "sonnet": "opus", "haiku": "sonnet"})
-        self.assertEqual(config["model_policy"]["runtime_tiers"]["codex"]["opus"]["model"], "gpt-6-astra")
-        self.assertEqual(len(config["review"]["reviewer_instances"]), 5)
-        self.assertEqual(config["review"]["default_reviewers"][0], "fable-review")
-        self.assertFalse(config["review"]["parallel_lanes"])
-        self.assertEqual(config["models"], {"planning": "opus", "discuss": "opus", "research": "opus",
-                                            "execution": "sonnet", "verification": "opus"})
-        # Agent pins are seeded in Claude form by default.
-        self.assertEqual(config["model_overrides"]["gsd-intel-updater"], "sonnet")
-        self.assertEqual(config["model_overrides"]["gsd-nyquist-auditor"], "opus")
-        # Running init again should not break or truncate JSON.
-        self.initialize()
-        self.assertEqual(self.config()["custom"], {"keep": True})
+    def policy(self):
+        return json.loads((self.project / 'gsd-cli.config.json').read_text())
 
-    def test_init_runtime_argument_selects_pin_form(self):
-        result = self.run_launcher("init", "codex")
+    def put_policy(self, policy):
+        (self.project / 'gsd-cli.config.json').write_text(json.dumps(policy))
+
+    def snapshot(self):
+        return {str(p.relative_to(self.project)): p.read_bytes() for p in self.project.rglob('*') if p.is_file() and p.name != '.gsd-cli.lock'}
+
+    def test_init_seeds_complete_policy_without_changing_working(self):
+        before = self.config_path.read_bytes()
+        self.initialize()
+        self.assertEqual(self.config_path.read_bytes(), before)
+        self.assertEqual(self.policy()['schema_version'], 1)
+        self.assertEqual(json.loads((self.project / '.planning/config.default.json').read_text())['custom'], {'keep': True})
+
+    def test_all_levels_exact_arguments_and_routing(self):
+        self.initialize()
+        for workflow in ('plan', 'exec'):
+            for runtime in ('claude', 'codex'):
+                for level in ('low', 'medium', 'high'):
+                    with self.subTest(workflow=workflow, runtime=runtime, level=level):
+                        result = self.run_launcher(workflow, runtime, level)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        model = {'claude': {'low': 'claude-sonnet-5-5', 'medium': 'claude-opus-5-5', 'high': 'claude-fable-5-1'},
+                                 'codex': {'low': 'gpt-6-luna', 'medium': 'gpt-6.1-sol', 'high': 'gpt-6-astra'}}[runtime][level]
+                        expected = {'model': model, 'effort': 'medium' if (workflow, runtime, level) == ('exec', 'codex', 'high') else level,
+                                    'permissions': 'normal' if (workflow, runtime) == ('plan', 'claude') else 'bypass',
+                                    'reviewers': ['astra-review' if runtime == 'claude' else 'fable-review', 'grok-review', 'gemini-review']}
+                        argv = ['--model', expected['model']]
+                        argv += ['--effort', expected['effort']] if runtime == 'claude' else ['-c', 'model_reasoning_effort=' + expected['effort']]
+                        if expected['permissions'] == 'bypass':
+                            argv += ['--dangerously-skip-permissions' if runtime == 'claude' else '--dangerously-bypass-approvals-and-sandbox']
+                        self.assertEqual(self.invocation()['args'], argv)
+                        self.assertEqual(self.invocation()['runtime'], runtime)
+                        self.assertEqual(self.config()['review']['default_reviewers'], expected['reviewers'])
+                        self.assertEqual(self.launches()[-1]['session_effort'], expected['effort'])
+                        self.assertEqual(self.launches()[-1]['level'], level)
+                        tier = {'low': 'haiku', 'medium': 'sonnet', 'high': 'opus'}[level]
+                        self.assertEqual(self.config()['models']['planning' if workflow == 'plan' else 'execution'], tier)
+                        self.assertEqual(self.config()['models']['verification'], 'opus')
+                        self.assertEqual(self.config()['model_overrides']['gsd-integration-checker'], 'opus' if runtime == 'claude' else 'gpt-6.1-sol')
+
+    def test_default_medium_and_custom_workflow_policy_authority(self):
+        self.initialize()
+        p = self.policy()
+        p['workflows']['ship'] = p['workflows']['exec']
+        p['runtimes']['codex']['medium']['session_model'] = 'my-model'
+        self.put_policy(p)
+        nested = self.project / 'src'
+        nested.mkdir()
+        result = self.run_launcher('ship', 'codex', cwd=nested)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.config()["model_overrides"]["gsd-intel-updater"], "gpt-6-luna")
-        self.assertEqual(self.config()["model_overrides"]["gsd-nyquist-auditor"], "gpt-6.1-sol")
-        for bad in (("init", "opencode"), ("init", "claude", "extra")):
-            with self.subTest(args=bad):
-                result = self.run_launcher(*bad)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("Usage: gsd-cli init", result.stderr)
+        self.assertEqual(self.invocation()['args'][:2], ['--model', 'my-model'])
+        self.assertEqual(self.invocation()['cwd'], str(self.project))
+        self.assertEqual(self.launches()[-1]['workflow'], 'ship')
+        self.assertEqual(self.launches()[-1]['level'], 'medium')
 
-    def test_codex_plan_selects_fable_reviewer_and_runtime(self):
+    def test_exact_forwarding_boundary_and_secure(self):
         self.initialize()
-        result = self.run_launcher("codex", "plan", "--", "--help")
+        forwarded = ['--help', '--secure', '--model', 'override', '--', '~high', 'with spaces']
+        result = self.run_launcher('exec', 'claude', '--secure', '--', *forwarded)
         self.assertEqual(result.returncode, 0, result.stderr)
-        invocation = self.invocation()
-        self.assertEqual(invocation["program"], "codex")
-        self.assertEqual(invocation["runtime"], "codex")
-        self.assertEqual(invocation["args"], ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=high",
-                                              "--dangerously-bypass-approvals-and-sandbox", "--help"])
-        self.assertEqual(invocation["cwd"], str(self.project))
-        self.assertEqual(
-            self.config()["review"]["default_reviewers"],
-            ["fable-review", "grok-review", "gemini-review"],
-        )
+        self.assertEqual(self.invocation()['args'], ['--model', 'claude-opus-5-5', '--effort', 'medium', *forwarded])
+        self.assertEqual(self.launches()[-1]['forwarded_args'], forwarded)
+        self.assertNotIn('--dangerously-skip-permissions', self.invocation()['args'])
 
-    def test_claude_plan_chooses_astra_reviewer(self):
+    def test_help_and_errors_never_write(self):
         self.initialize()
-        result = self.run_launcher("claude", "plan")
+        before = self.snapshot()
+        for args in [('--help',), ('init', '--help'), ('exec', '--help'), ('exec', 'codex', '--help')]:
+            result = self.run_launcher(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.snapshot(), before)
+        for args in [('exec', 'codex', '--unknown'), ('exec', 'codex', 'huge'), ('codex', 'plan')]:
+            result = self.run_launcher(*args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.snapshot(), before)
+        self.assertIn('plan codex', self.run_launcher('codex', 'plan').stderr)
+        self.put_policy({'broken': True})
+        self.assertEqual(self.run_launcher('--help').returncode, 0)
+        self.assertEqual(self.run_launcher('init', '--help').returncode, 0)
+        self.assertEqual(self.run_launcher('--help', cwd=self.root).returncode, 0)
+
+    def test_incomplete_policy_does_not_fall_back_or_write(self):
+        self.initialize()
+        p = self.policy()
+        del p['runtimes']['codex']['low']
+        self.put_policy(p)
+        before = self.snapshot()
+        result = self.run_launcher('exec', 'codex')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('runtimes.codex', result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.log.exists())
+
+    def test_capture_default_stability_and_read_only_status(self):
+        self.initialize()
+        self.assertEqual(self.run_launcher('plan', 'codex').returncode, 0)
+        default = self.project / '.planning/config.default.json'
+        before = default.read_bytes()
+        self.assertEqual(self.run_launcher('exec', 'claude').returncode, 0)
+        self.assertEqual(default.read_bytes(), before)
+        w = self.config()
+        w['workflow']['research'] = False
+        self.config_path.write_text(json.dumps(w))
+        before = self.snapshot()
+        self.assertEqual(self.run_launcher('status').returncode, 0)
+        self.assertEqual(self.snapshot(), before)
+        result = self.run_launcher('exec', 'codex')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"][:2], ["--model", "claude-fable-5-1"])
-        self.assertEqual(self.invocation()["runtime"], "claude")
-        self.assertEqual(
-            self.config()["review"]["default_reviewers"],
-            ["astra-review", "grok-review", "gemini-review"],
-        )
+        self.assertIn('workflow.research', result.stderr)
+        self.assertFalse(json.loads(default.read_text())['workflow']['research'])
 
-    def test_execution_preserves_reviewers_and_changes_execution_tier(self):
+    def test_fresh_checkout_works_without_working_or_baseline(self):
         self.initialize()
-        self.assertEqual(self.run_launcher("claude", "plan").returncode, 0)
-        result = self.run_launcher("claude", "exec-sonnet")
+        self.config_path.unlink()
+        (self.project / '.planning/.gsd-cli-sync.json').unlink()
+        self.assertEqual(self.run_launcher('status').returncode, 0)
+        result = self.run_launcher('plan', 'codex')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"][:2], ["--model", "claude-sonnet-5-5"])
-        config = self.config()
-        self.assertEqual(config["models"]["execution"], "haiku")
-        self.assertEqual(config["models"]["verification"], "opus")
-        self.assertEqual(config["review"]["default_reviewers"][0], "astra-review")
-        result = self.run_launcher("codex", "exec-high")
+        self.assertTrue(self.config_path.exists())
+
+    def test_missing_executable_no_changes_or_launch_log(self):
+        self.initialize()
+        (self.bin / 'codex').unlink()
+        env = {**self.env, 'PATH': str(self.bin)}
+        before = self.snapshot()
+        result = self.run_launcher('exec', 'codex', env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Cannot find CLI', result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse((self.root / 'state/gsd-cli/launches.jsonl').exists())
+
+    def test_billing_guards_follow_custom_reviewer_adapters(self):
+        self.initialize()
+        p = self.policy()
+        p['reviewers']['custom'] = {'cli': 'claude', 'model': 'custom'}
+        p['reviewer_groups']['custom'] = ['custom']
+        p['workflows']['exec']['reviewer_groups']['codex'] = 'custom'
+        self.put_policy(p)
+        before = self.snapshot()
+        for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY'):
+            result = self.run_launcher('exec', 'codex', env={**self.env, key: 'test-only'})
+            self.assertNotEqual(result.returncode, 0, key)
+            self.assertIn('Refusing', result.stderr)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_unselected_adapter_does_not_trigger_billing_guard(self):
+        self.initialize()
+        p = self.policy()
+        p['reviewer_groups']['none'] = []
+        p['workflows']['exec']['reviewer_groups']['claude'] = 'none'
+        self.put_policy(p)
+        result = self.run_launcher('exec', 'claude', env={**self.env, 'OPENAI_API_KEY': 'test-only'})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            self.invocation()["args"],
-            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=medium",
-             "--dangerously-bypass-approvals-and-sandbox"],
-        )
-        self.assertEqual(self.config()["models"]["execution"], "opus")
-        self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
-
-    def test_launch_appends_one_record(self):
-        self.initialize()
-        result = self.run_launcher("codex", "exec-high", "--search", "--", "--foo")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            self.invocation()["args"],
-            ["--model", "gpt-6-astra", "-c", "model_reasoning_effort=medium",
-             "--dangerously-bypass-approvals-and-sandbox", "--search", "--foo"],
-        )
-        records = self.launches()
-        self.assertEqual(len(records), 1)
-        record = records[0]
-        self.assertEqual(record["runtime"], "codex")
-        self.assertEqual(record["profile"], "exec-high")
-        self.assertEqual(record["session_model"], "gpt-6-astra")
-        self.assertEqual(record["session_effort"], "medium")
-        self.assertEqual(record["forwarded_args"], ["--search", "--foo"])
-        self.assertEqual(record["project"], str(self.project))
-        self.assertEqual(record["config"], self.config())
-        self.assertRegex(record["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$")
-        self.assertIsNone(record["gsd_defaults"])
-        self.assertEqual(self.run_launcher("codex", "exec-high").returncode, 0)
-        self.assertEqual(len(self.launches()), 2)
-
-    def test_launch_record_keeps_pre_separator_args_without_secure(self):
-        self.initialize()
-        result = self.run_launcher("claude", "exec-opus", "--resume", "--secure", "--", "--model", "x")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["args"],
-                         ["--model", "claude-opus-5-5", "--resume", "--model", "x"])
-        self.assertEqual(self.launches()[0]["forwarded_args"], ["--resume", "--model", "x"])
-
-    def test_launch_record_includes_gsd_defaults(self):
-        self.initialize()
-        (self.home / ".gsd").mkdir()
-        (self.home / ".gsd" / "defaults.json").write_text('{"model_profile": "quality"}', encoding="utf-8")
-        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
-        self.assertEqual(self.launches()[0]["gsd_defaults"], {"model_profile": "quality"})
-
-    def test_claude_launch_records_no_session_effort(self):
-        self.initialize()
-        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
-        self.assertIsNone(self.launches()[0]["session_effort"])
+        self.assertEqual(self.config()['review']['default_reviewers'], [])
 
     def test_launch_log_failure_warns_and_launches(self):
         self.initialize()
-        (self.root / "state").write_text("not a directory", encoding="utf-8")
-        result = self.run_launcher("claude", "exec-opus")
+        state = self.root / 'state'
+        state.write_text('blocked')
+        result = self.run_launcher('exec', 'codex')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("could not write launch log", result.stderr)
-        self.assertEqual(self.invocation()["program"], "claude")
+        self.assertIn('could not write launch log', result.stderr)
+        self.assertTrue(self.log.exists())
 
-    def test_launch_materializes_agent_tiers_per_runtime(self):
-        self.initialize()
-        config = self.config()
-        config["model_overrides"] = {"gsd-ui-auditor": "custom-model", "gsd-intel-updater": "stale"}
-        self.config_path.write_text(json.dumps(config), encoding="utf-8")
-
-        self.assertEqual(self.run_launcher("claude", "exec-opus").returncode, 0)
-        overrides = self.config()["model_overrides"]
-        # Claude: Agent-tool aliases via the Claude tier map (haiku -> sonnet, sonnet -> opus).
-        self.assertEqual(overrides["gsd-intel-updater"], "sonnet")
-        self.assertEqual(overrides["gsd-codebase-mapper"], "sonnet")
-        self.assertEqual(overrides["gsd-nyquist-auditor"], "opus")
-        self.assertEqual(overrides["gsd-pattern-mapper"], "opus")
-        # Unmanaged override keys survive.
-        self.assertEqual(overrides["gsd-ui-auditor"], "custom-model")
-
-        self.assertEqual(self.run_launcher("codex", "exec-high").returncode, 0)
-        overrides = self.config()["model_overrides"]
-        # Codex: full IDs via the Codex tier map.
-        self.assertEqual(overrides["gsd-intel-updater"], "gpt-6-luna")
-        self.assertEqual(overrides["gsd-nyquist-auditor"], "gpt-6.1-sol")
-        self.assertEqual(overrides["gsd-ui-auditor"], "custom-model")
-        # Every pinned agent is present and nothing else was added.
-        pinned = {"gsd-nyquist-auditor", "gsd-integration-checker", "gsd-pattern-mapper",
-                  "gsd-doc-verifier", "gsd-research-synthesizer", "gsd-codebase-mapper",
-                  "gsd-intel-updater", "gsd-doc-classifier", "gsd-user-profiler",
-                  "gsd-mempalace-curator"}
-        self.assertEqual(set(overrides) - {"gsd-ui-auditor"}, pinned)
-
-    def test_codex_session_effort_follows_tier_or_profile_and_claude_gets_none(self):
-        self.initialize()
-        # exec-high overrides Astra's tier effort: the orchestrator coordinates at
-        # medium while GSD gives executors their own (high) effort.
-        for profile, expected in (("exec-high", "medium"), ("exec-medium", "medium"), ("exec-low", "low"),
-                                  ("plan", "high"), ("review-codex-plan", "high")):
-            with self.subTest(profile=profile):
-                self.assertEqual(self.run_launcher("codex", profile).returncode, 0)
-                self.assertEqual(self.invocation()["args"][2:4], ["-c", f"model_reasoning_effort={expected}"])
-        self.assertEqual(self.run_launcher("claude", "exec-opus", "--", "--help").returncode, 0)
-        self.assertEqual(
-            self.invocation()["args"],
-            ["--model", "claude-opus-5-5", "--dangerously-skip-permissions", "--help"],
-        )
-
-    def test_explicit_reviewer_preset_uses_plan_author(self):
-        self.initialize()
-        self.assertEqual(self.run_launcher("claude", "plan").returncode, 0)
-        self.assertEqual(self.run_launcher("codex", "review-codex-plan").returncode, 0)
-        self.assertEqual(self.config()["review"]["default_reviewers"][0], "fable-review")
-        self.assertEqual(self.run_launcher("claude", "review-claude-plan").returncode, 0)
-        self.assertEqual(self.config()["review"]["default_reviewers"][0], "astra-review")
-
-    BYPASS = {
-        "claude": "--dangerously-skip-permissions",
-        "codex": "--dangerously-bypass-approvals-and-sandbox",
-    }
-    EXEC_PROFILES = {"claude": ("exec-opus", "exec-sonnet"), "codex": ("exec-high", "exec-medium", "exec-low")}
-    REVIEW_PROFILES = ("review-codex-plan", "review-claude-plan")
-    BYPASS_PROFILES = {"claude": (*EXEC_PROFILES["claude"], *REVIEW_PROFILES),
-                       "codex": ("plan", *EXEC_PROFILES["codex"], *REVIEW_PROFILES)}
-
-    def test_execution_and_reviews_bypass_permissions_by_default(self):
-        self.initialize()
-        for runtime, profiles in self.BYPASS_PROFILES.items():
-            for profile in profiles:
-                with self.subTest(runtime=runtime, profile=profile):
-                    result = self.run_launcher(runtime, profile, "--", "--help")
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(self.invocation()["args"][-2:], [self.BYPASS[runtime], "--help"])
-
-    def test_secure_keeps_permission_prompts(self):
-        self.initialize()
-        for runtime, profiles in self.BYPASS_PROFILES.items():
-            for profile in profiles:
-                with self.subTest(runtime=runtime, profile=profile):
-                    result = self.run_launcher(runtime, profile, "--secure", "--", "--help")
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    args = self.invocation()["args"]
-                    self.assertNotIn(self.BYPASS[runtime], args)
-                    self.assertNotIn("--secure", args)
-                    self.assertEqual(args[-1], "--help")
-
-    def test_secure_after_separator_is_forwarded_unchanged(self):
-        self.initialize()
-        for profile in ("plan", "exec-high", "review-codex-plan"):
-            with self.subTest(profile=profile):
-                result = self.run_launcher("codex", profile, "--", "--secure")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(self.invocation()["args"][-2:], [self.BYPASS["codex"], "--secure"])
-
-    def test_claude_planning_keeps_permissions(self):
-        self.initialize()
-        for extra in ((), ("--secure",)):
-            with self.subTest(extra=extra):
-                result = self.run_launcher("claude", "plan", *extra)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                args = self.invocation()["args"]
-                self.assertNotIn(self.BYPASS["claude"], args)
-                self.assertNotIn("--secure", args)
-
-    def test_default_bypass_preserves_billing_guard(self):
-        self.initialize()
-        env = self.env.copy()
-        env["OPENAI_API_KEY"] = "fake-key"
-        for profile in ("plan", "exec-high", "review-codex-plan"):
-            with self.subTest(profile=profile):
-                result = self.run_launcher("codex", profile, env=env)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("OPENAI_API_KEY", result.stderr)
-                self.assertFalse(self.log.exists())
-
-    def test_api_key_guard_blocks_subscription_mode(self):
-        self.initialize()
-        guarded_env = self.env.copy()
-        guarded_env["ANTHROPIC_API_KEY"] = "fake-key"
-        result = self.run_launcher("codex", "plan", env=guarded_env)
+    def test_legacy_project_requires_explicit_init(self):
+        before = self.snapshot()
+        result = self.run_launcher('plan', 'codex')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ANTHROPIC_API_KEY", result.stderr)
-        self.assertFalse(self.log.exists())
-
-    def test_find_config_from_nested_directory(self):
-        self.initialize()
-        nested = self.project / "nested" / "subdir"
-        nested.mkdir(parents=True)
-        result = self.run_launcher("codex", "exec-medium", cwd=nested)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()["cwd"], str(self.project))
-
-    def test_reports_missing_config(self):
-        result = self.run_launcher("init", cwd=self.root)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(".planning/config.json not found", result.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIn('gsd-cli init', result.stderr)
+        self.assertEqual(self.snapshot(), before)

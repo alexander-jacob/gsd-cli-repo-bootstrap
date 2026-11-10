@@ -16,11 +16,8 @@ from test_gsd_cli import LAUNCHER
 
 
 def load_launcher():
-    loader = importlib.machinery.SourceFileLoader("gsd_cli", str(LAUNCHER))
-    spec = importlib.util.spec_from_loader("gsd_cli", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+    from gsd_cli import sessions
+    return sessions
 
 
 START = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
@@ -490,6 +487,14 @@ class CheckTests(SessionsTestCase):
         with mock.patch.dict(self.gsd.REVIEWERS, extra):
             self.checked(self.session(children=[reviewer]), None)
         self.assertEqual(reviewer.marks, ["! fable-review expects claude-fable-5-1"])
+
+    def test_reviewer_uses_recorded_project_definition(self):
+        reviewer = self.child(kind="reviewer", agent_type=None, requested=None, model="claude-opus-5-5")
+        launch = self.launch()
+        launch['workflow'] = 'exec'
+        launch['config'] = {'review': {'default_reviewers': ['mine'], 'reviewer_instances': {'mine': {'cli': 'claude', 'model': 'claude-opus-5-5'}}}}
+        self.checked(self.session(children=[reviewer]), launch)
+        self.assertEqual(reviewer.marks, [])
 
     def test_check_without_resolver_sets_unavailable(self):
         agent = self.child(requested="opus", model="claude-sonnet-5-5")
