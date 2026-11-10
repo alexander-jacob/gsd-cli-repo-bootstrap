@@ -24,7 +24,7 @@ cd /path/to/your/gsd-project
 gsd-cli init
 ```
 
-If you installed the old single-file launcher, follow the [replacement instructions](docs/LAUNCHER.md#installation) first. `task install` now uses pipx; copying the `gsd-cli` source wrapper alone no longer works.
+For an existing project, follow the [installation, migration and first-use walkthrough](MIGRATION.md). It includes replacing the old single-file launcher. `task install` now uses pipx; copying the `gsd-cli` source wrapper alone no longer works.
 
 `init` loads the complete [bundled JSON policy](gsd_cli/data/default-config.json) through package resources. It preserves compatible legacy model/reviewer settings and leaves the existing working config untouched. Review and commit the generated policy, default and ignore changes. For a previously tracked working config, init stages its removal from the index while keeping the local file. It makes no commit.
 
