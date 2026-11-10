@@ -256,3 +256,70 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(self.policy['runtimes']['codex']['medium']['agent_model'], 'custom-sol')
         self.assertEqual(self.policy['reviewers']['mine']['model'], 'custom-review')
         self.assertTrue(self.policy['workflows']['exec']['parallel_reviews'])
+
+    def test_nested_ignore_exception_allows_init(self):
+        self.git('init', '-q')
+        (self.root / '.planning/.gitignore').write_text('*\n!config.default.json\n')
+        self.init()
+        self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '--no-index', '.planning/config.default.json'], cwd=self.root).returncode, 1)
+
+    def test_ignore_exception_is_appended_after_overriding_rule(self):
+        self.git('init', '-q')
+        (self.root / '.gitignore').write_text('!/.planning/config.default.json\n/.planning/*\n')
+        self.init()
+        self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '--no-index', '.planning/config.default.json'], cwd=self.root).returncode, 1)
+        before = (self.root / '.gitignore').read_bytes()
+        config.initialize(self.root)
+        self.assertEqual((self.root / '.gitignore').read_bytes(), before)
+
+    def test_ignored_policy_exception_is_appended_after_overriding_rule(self):
+        self.git('init', '-q')
+        (self.root / '.gitignore').write_text('!/gsd-cli.config.json\n*.json\n')
+        self.init()
+        self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '--no-index', 'gsd-cli.config.json'], cwd=self.root).returncode, 1)
+
+    def test_subproject_nested_ignore_conflict_before_writes(self):
+        self.git('init', '-q')
+        subproject = self.root / 'app'
+        (subproject / '.planning').mkdir(parents=True)
+        self.put(subproject / '.planning/config.json', {})
+        (subproject / '.planning/.gitignore').write_text('*\n')
+        with self.assertRaisesRegex(config.ConfigError, 'Nested'):
+            config.initialize(subproject)
+        self.assertFalse((subproject / 'gsd-cli.config.json').exists())
+        self.assertFalse((subproject / '.gitignore').exists())
+        self.assertFalse((subproject / '.planning/config.default.json').exists())
+
+    def test_ignored_project_ancestor_refuses_init_before_writes(self):
+        self.git('init', '-q')
+        (self.root / '.gitignore').write_text('/app/\n')
+        subproject = self.root / 'app' / 'nested'
+        (subproject / '.planning').mkdir(parents=True)
+        self.put(subproject / '.planning/config.json', {})
+        with self.assertRaisesRegex(config.ConfigError, 'ancestor'):
+            config.initialize(subproject)
+        self.assertFalse((subproject / 'gsd-cli.config.json').exists())
+        self.assertFalse((subproject / '.gitignore').exists())
+        self.assertFalse((subproject / '.planning/config.default.json').exists())
+
+    def test_hidden_nested_ignore_is_checked_after_planned_reopen(self):
+        self.git('init', '-q')
+        (self.root / '.gitignore').write_text('.planning/\n')
+        (self.root / '.planning/.gitignore').write_text('*\n')
+        with self.assertRaisesRegex(config.ConfigError, 'Nested'):
+            self.init()
+        self.assertFalse(self.policy_file.exists())
+        self.assertFalse(self.default.exists())
+
+    def test_nested_rule_cannot_expose_private_sync_files(self):
+        self.git('init', '-q')
+        (self.root / '.planning/.gitignore').write_text('!.gsd-cli-sync.json\n')
+        with self.assertRaisesRegex(config.ConfigError, 'Nested'):
+            self.init()
+        self.assertFalse(self.policy_file.exists())
+
+    def test_generated_ignore_rules_are_trackable_under_wildcard(self):
+        self.git('init', '-q')
+        (self.root / '.gitignore').write_text('*\n')
+        self.init()
+        self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '--no-index', '.gitignore'], cwd=self.root).returncode, 1)

@@ -333,16 +333,55 @@ def seed_settings(defaults: dict, existing: dict) -> dict:
     return result
 
 
+def ignored(root: Path, name: str) -> bool:
+    # With -v, Git also prints matching NEGATED rules and returns zero.
+    # -q gives the effective exclusion status needed here.
+    return git(root, 'check-ignore', '-q', '--no-index', '--', name).returncode == 0
+
+
 def ignore_text(root: Path) -> str:
     original = read_text(root / '.gitignore') or ''
-    rules = []
-    # Reopen an ignored planning directory without exposing its other contents.
-    if git(root, 'check-ignore', '-q', '--no-index', '.planning/').returncode == 0:
-        rules += ['!/.planning/', '/.planning/*']
-    rules += ['!/gsd-cli.config.json', '!/.planning/config.default.json',
-              '/.planning/config.json', '/.planning/.gsd-cli-*', '/.planning/.gsd-cli.lock', '/.gsd-cli-tmp-*']
-    additions = [rule for rule in rules if rule not in original.splitlines()]
+    additions = []
+    reopen = ignored(root, '.planning')
+    if reopen:
+        # These must follow earlier rules, even when their text already exists.
+        additions += ['!/.planning/', '/.planning/*']
+    for name in ('.gitignore', POLICY, DEFAULT):
+        rule = '!/' + name
+        if rule not in original.splitlines() or ignored(root, name) or (reopen and name == DEFAULT):
+            additions.append(rule)
+    for rule in ('/.planning/config.json', '/.planning/.gsd-cli-*', '/.planning/.gsd-cli.lock', '/.gsd-cli-tmp-*'):
+        if rule not in original.splitlines():
+            additions.append(rule)
     return original + ('\n' if original and not original.endswith('\n') else '') + ('\n# gsd-cli project configuration\n' + '\n'.join(additions) + '\n' if additions else '')
+
+
+def validate_ignores(root: Path, candidate: str) -> None:
+    repository = git(root, 'rev-parse', '--show-toplevel')
+    if repository.returncode:
+        return
+    prefix = git(root, 'rev-parse', '--show-prefix').stdout.strip().rstrip('/')
+    if prefix and ignored(Path(repository.stdout.strip()), prefix):
+        raise ConfigError('An ignored project ancestor hides launcher configuration; unignore the project in ancestor Git rules before init')
+    # Evaluate the proposed rules without writing the project or touching its
+    # index. A nested ignore file may be hidden by the CURRENT parent exclusion,
+    # then become authoritative after we reopen .planning. Mirror both files.
+    nested = read_text(root / '.planning/.gitignore')
+    with tempfile.TemporaryDirectory(prefix='gsd-ignore-check-') as directory:
+        probe = Path(directory)
+        result = git(probe, 'init', '-q', '--template=')
+        if result.returncode:
+            raise ConfigError('Cannot validate migration ignore rules: ' + result.stderr.strip())
+        (probe / '.planning').mkdir()
+        (probe / '.gitignore').write_text(candidate, encoding='utf-8')
+        if nested is not None:
+            (probe / '.planning/.gitignore').write_text(nested, encoding='utf-8')
+        hidden = [name for name in (POLICY, DEFAULT, '.gitignore') if ignored(probe, name)]
+        exposed = [name for name in (WORKING, STATE, JOURNAL, LOCK, '.planning/.gsd-cli-tmp-probe') if not ignored(probe, name)]
+        if hidden or exposed:
+            raise ConfigError('Nested .planning/.gitignore conflicts with migration: '
+                              f'hidden tracked files {hidden}; exposed local files {exposed}. '
+                              'Allow config.default.json and ignore local config/sync/recovery files before init')
 
 
 def initialize(root: Path) -> None:
@@ -377,9 +416,7 @@ def initialize(root: Path) -> None:
             default = seed_settings(policy['gsd_defaults'], baseline)
             reject_owned(default, paths | set(TRANSIENT))
         state = existing_state or {'version': 1, 'baseline': baseline, 'managed': sorted(paths)}
-        contents = {POLICY: serialize(policy), DEFAULT: serialize(default), STATE: serialize(state), '.gitignore': ignore_text(root)}
-        # Nested ignore rules override root exceptions: report before changing files.
-        nested = root / '.planning/.gitignore'
-        if nested.exists() and git(root, 'check-ignore', '-v', '--no-index', '.planning/config.default.json').stdout.startswith('.planning/.gitignore:'):
-            raise ConfigError('Nested .planning/.gitignore hides config.default.json; add !config.default.json there before init')
+        ignores = ignore_text(root)
+        validate_ignores(root, ignores)
+        contents = {POLICY: serialize(policy), DEFAULT: serialize(default), STATE: serialize(state), '.gitignore': ignores}
         transaction(root, contents, untrack=git_tracked(root))
