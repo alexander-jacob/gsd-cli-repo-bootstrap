@@ -13,6 +13,7 @@ def install_resolver(directory: Path, model='fixture-model') -> Path:
     shared.mkdir(parents=True, exist_ok=True)
     (shared / 'model-catalog.json').write_text(json.dumps({'agents': {
         'gsd-planner': {'phaseType': 'planning', 'routingTier': 'heavy'},
+        'gsd-executor': {'phaseType': 'execution', 'routingTier': 'heavy'},
         'gsd-verifier': {'phaseType': 'verification', 'routingTier': 'heavy'},
     }}))
     # Invoking the public CLI would mutate the installation. The bridge must

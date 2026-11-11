@@ -1,6 +1,8 @@
 """Evidence-based comparisons and plain-text reporting for configuration previews."""
 import json
+import re
 from pathlib import Path
+import click
 
 from . import config
 
@@ -159,4 +161,84 @@ def render(root: Path, workflow: str, runtime: str, level: str, policy: dict,
     for diagnostic in inspection['diagnostics']:
         lines.append('Diagnostic: ' + display(diagnostic))
     lines += ['', 'Launcher effective configuration:', json.dumps(data, indent=2, ensure_ascii=True, allow_nan=False)]
+    return '\n'.join(lines) + '\n'
+
+
+def colorize_json(value: str, enabled: bool) -> str:
+    if not enabled:
+        return value
+    token = re.compile(r'"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b')
+
+    def style(match: re.Match) -> str:
+        word = match.group()
+        if word.startswith('"'):
+            color = 'cyan' if value[match.end():].lstrip().startswith(':') else 'green'
+        elif word in ('true', 'false', 'null'):
+            color = 'magenta'
+        else:
+            color = 'yellow'
+        return click.style(word, fg=color)
+
+    return token.sub(style, value)
+
+
+def use_color(stream, environ: dict) -> bool:
+    return stream.isatty() and 'NO_COLOR' not in environ
+
+
+def render_compact(root: Path, workflow: str, runtime: str, level: str, policy: dict,
+                   resolved: dict, data: dict, captured: list[str], argv: list[str],
+                   forwarded: list[str], inspection: dict, color: bool = False) -> str:
+    state = 'COMPLETE' if inspection['complete'] else 'INCOMPLETE'
+    heading = f'Configuration preview: {display(workflow)}/{display(runtime)}/{display(level)} [{state}]'
+    lines = [click.style(heading, fg='cyan', bold=True) if color else heading,
+             f'Project: {display(str(root))}',
+             f'Session request: {display(resolved["model"])} | effort {display(resolved["effort"])} | ? actual run unknown',
+             'Agents this workflow may use (configured → GSD resolved; no session was run)']
+    phases = set(policy['workflows'][workflow]['tasks']) | set(policy['workflows'][workflow]['task_levels'])
+    catalog, agents = inspection['catalog'], inspection['agents']
+    configured = set()
+    for key in (('model_overrides',), ('effort', 'agent_overrides')):
+        values = value_at(data, *key)
+        if isinstance(values, dict):
+            configured.update(values)
+    names = set(catalog) | set(agents) | configured
+    rows = []
+    for agent in names:
+        meta = catalog.get(agent, {})
+        phase = meta.get('phaseType', 'unknown')
+        if phase not in phases:
+            continue
+        model, effort, _, _ = expectations(data, agent, meta, runtime)
+        result = agents.get(agent, {})
+        check, _ = compare(model, effort, result, runtime, resolved['effort'], bool(forwarded), inspection.get('aliases', {}))
+        mark = {'OK': '✓', 'NOT OK': '✗', 'UNKNOWN': '?'}[check]
+        rows.append((phase, agent, display(model), display(result.get('model')),
+                     display(effort) + ' → ' + display(result.get('effort')), mark))
+    widths = [max(len(str(row[i])) for row in rows) if rows else 0 for i in range(1, 5)]
+    widths = [max(widths[i], len(label)) for i, label in enumerate(('Agent', 'Configured', 'GSD sees', 'Effort'))]
+    lines.append(' | '.join(label.ljust(width) for label, width in zip(
+        ('Agent', 'Configured', 'GSD sees', 'Effort'), widths)) + ' | Check')
+    last_phase = None
+    for phase, agent, model, gsd_model, effort, mark in sorted(rows):
+        if phase != last_phase:
+            phase_label = f'[{display(phase)}]'
+            lines.append(click.style(phase_label, fg='cyan') if color else phase_label)
+            last_phase = phase
+        if color:
+            mark = click.style(mark, fg={'✓': 'green', '✗': 'red', '?': 'bright_black'}[mark], bold=True)
+        lines.append(' | '.join(str(cell).ljust(width) for cell, width in zip(
+            (display(agent), model, gsd_model, effort), widths)) + ' | ' + mark)
+    lines.extend(['', 'Reviewers (configured; execution unknown): ' + ', '.join(display(v) for v in resolved['reviewers']),
+                  '✓ matches | ✗ mismatch | ? insufficient evidence',
+                  'Use --config --details for resolver inputs, diagnostics, and effective JSON.'])
+    if forwarded:
+        lines.append('Forwarded options may override launcher requests: ' + display(forwarded))
+    unclassified = configured - set(catalog)
+    if unclassified:
+        lines.append(f'{len(unclassified)} configured agents have no phase metadata; see --details.')
+    if captured:
+        lines.append('Pending persistent capture (not saved): ' + display(captured))
+    for diagnostic in inspection['diagnostics']:
+        lines.append('Diagnostic: ' + display(diagnostic))
     return '\n'.join(lines) + '\n'

@@ -21,7 +21,7 @@ gsd-cli init
 gsd-cli status
 gsd-cli check [claude|codex]
 gsd-cli sessions [claude|codex] [--pick [N]]
-gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [--config] [-- CHILD_ARGS...]
+gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [--config [--details]] [-- CHILD_ARGS...]
 ```
 
 Workflow and runtime are mandatory; level defaults to medium. Old runtime-first syntax is rejected with a replacement example. No preset runs a GSD command. Start the desired GSD skill yourself after the CLI opens.
@@ -36,17 +36,20 @@ A forwarded model/effort argument may override the preset at the child CLI's dis
 gsd-cli plan codex --config
 gsd-cli exec claude high --config
 gsd-cli ship codex --secure --config  # when ship is defined in project policy
+gsd-cli plan codex --config --details  # full evidence and effective JSON
 ```
 
-This prints and exits. It calculates the same prospective `.planning/config.json` as a normal launch, including pending persistent changes, then asks the selected installed GSD resolver about each registered/configured agent using a temporary snapshot. It prints the complete prospective JSON, phase settings, requested session argv, reviewer models/efforts, and agent resolution. All roles are listed; this is not a prediction of which agents a workflow will execute.
+This prints and exits. It calculates the same prospective `.planning/config.json` as a normal launch, including pending persistent changes, then asks the selected installed GSD resolver about each registered/configured agent using a temporary snapshot. The default report puts the workflow and requested session model first, then compares configured and GSD-resolved model and effort for agents in the workflow's task phases and task-level phases. These are agents the workflow may use, not a record of execution. Configured agents with no installed phase metadata are counted and listed in `--details`.
+
+`--config --details` retains the complete report: requested session argv, all registered/configured agents, resolver inputs, diagnostics, reviewer models/efforts, and the prospective JSON. It colors JSON syntax in an interactive terminal. Headings and check symbols in the compact view are colored there too. `NO_COLOR` disables color; redirected output is plain text. `--details` requires `--config`.
 
 The **Check** column compares configured expectations with available evidence:
 
 | Check | Meaning |
 |---|---|
-| `OK` | Applicable comparisons match resolver/installed-file evidence. |
-| `NOT OK` | A known mismatch exists; the notes name the setting and both values. |
-| `UNKNOWN` | Evidence or an unambiguous configured expectation is missing. |
+| `✓` (`OK` in details) | Applicable comparisons match resolver/installed-file evidence. |
+| `✗` (`NOT OK` in details) | A known mismatch exists; detailed notes name the setting and both values. |
+| `?` (`UNKNOWN` in details) | Evidence or an unambiguous configured expectation is missing. |
 
 For Claude, the report distinguishes configured effort from installed agent frontmatter and session inheritance. For Codex, it shows GSD's rendered effort and propagation mechanism. A resolver-confirmed configuration is not proof of actual AI execution. Session and external reviewer rows are configuration-only and carry `UNKNOWN`. Agents without an explicit effort expectation also retain `UNKNOWN`; GSD's resolved default is still shown. A mismatch takes precedence over other unknown fields in the same row.
 

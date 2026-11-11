@@ -15,7 +15,7 @@ gsd-cli plan codex --config    # preview config and GSD resolution; print and ex
 
 Workflow and runtime are always explicit. You can define additional workflow names, such as `ship`, in your project policy. No GSD command is invoked automatically.
 
-`--config` works with every workflow preset. It prints the prospective JSON, session/reviewer settings, and an agent model/effort matrix with `OK`, `NOT OK`, or `UNKNOWN` checks. The selected installed GSD resolver reads a temporary configuration snapshot; project files, installed agents, and launch logs stay unchanged. No AI session runs. Node is required for resolver queries. An incomplete query prints available configuration and exits 1; known setting differences are findings, not command failures. See [preview details](docs/LAUNCHER.md#configuration-preview).
+`--config` works with every workflow preset. It shows the workflow, requested session model and effort, and a compact table comparing configured models and efforts with installed GSD resolution for agents in the workflow's phases. `✓`, `✗`, and `?` mean match, mismatch, and insufficient evidence. Add `--details` for the full resolver evidence and effective JSON. Interactive terminals get colored checks and syntax-colored JSON; redirected output stays plain. The selected installed GSD resolver reads a temporary configuration snapshot; project files, installed agents, and launch logs stay unchanged. No AI session runs. Node is required for resolver queries. An incomplete query prints available configuration and exits 1; known setting differences are findings, not command failures. See [preview details](docs/LAUNCHER.md#configuration-preview).
 
 ## Install and initialize
 

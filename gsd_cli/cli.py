@@ -42,7 +42,7 @@ class WorkflowGroup(click.Group):
 def cli():
     """Open Claude/Codex with project-owned workflow presets.
 
-    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [--config] [-- CLI_ARGS...]
+    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [--config [--details]] [-- CLI_ARGS...]
     Level defaults to medium. Put all child CLI arguments after --.
     Presets open the runtime; they never invoke a GSD workflow.
     """
@@ -127,8 +127,11 @@ def workflow_command(name: str):
     @click.argument('level', type=click.Choice(LEVELS), default='medium')
     @click.option('--secure', is_flag=True, help='Suppress the preset permission-bypass flag.')
     @click.option('--config', 'show_config', is_flag=True, help='Print effective config and installed GSD model/effort checks, then exit without launching.')
+    @click.option('--details', is_flag=True, help='With --config, show resolver evidence and full effective JSON.')
     @click.pass_context
-    def launch(ctx, runtime, level, secure, show_config):
+    def launch(ctx, runtime, level, secure, show_config, details):
+        if details and not show_config:
+            raise click.UsageError('--details requires --config')
         forwarded = ctx.obj.get('forwarded', [])
         guard_project_location(runtime, forwarded)
         root = config.discover()
@@ -138,8 +141,17 @@ def workflow_command(name: str):
         if show_config:
             data, captured = config.preview(root, policy, resolved)
             inspection = resolver.inspect(root, data, runtime, policy['gsd']['min_version'])
-            click.echo(preview.render(root, name, runtime, level, policy, resolved, data,
-                                      captured, argv, forwarded, inspection), nl=False)
+            color = preview.use_color(click.get_text_stream('stdout'), os.environ)
+            if details:
+                report = preview.render(root, name, runtime, level, policy, resolved, data,
+                                        captured, argv, forwarded, inspection)
+                marker = 'Launcher effective configuration:\n'
+                before, raw_json = report.split(marker, 1)
+                report = before + marker + preview.colorize_json(raw_json, color)
+            else:
+                report = preview.render_compact(root, name, runtime, level, policy, resolved,
+                                                data, captured, argv, forwarded, inspection, color)
+            click.echo(report, nl=False, color=color)
             if not inspection['complete']:
                 raise click.ClickException('Configuration preview is incomplete; see resolver diagnostics above.')
             return

@@ -17,6 +17,20 @@ def resolution(**changes):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_json_color_and_terminal_detection(self):
+        from gsd_cli.preview import colorize_json, use_color
+        raw = '{"key":"safe\\u001b[31m", "count":12, "enabled":true, "empty":null}'
+        self.assertEqual(colorize_json(raw, False), raw)
+        styled = colorize_json(raw, True)
+        self.assertIn('\x1b[', styled)
+        self.assertEqual(__import__('re').sub(r'\x1b\[[0-9;]*m', '', styled), raw)
+        self.assertEqual(styled.count('\x1b['), 16)
+        class Stream:
+            def isatty(self):
+                return True
+        self.assertTrue(use_color(Stream(), {}))
+        self.assertFalse(use_color(Stream(), {'NO_COLOR': ''}))
+
     def check(self, model='chosen-model', effort='high', result=None, runtime='codex', forwarded=False, aliases=None):
         self.assertIsNotNone(importlib.util.find_spec('gsd_cli.preview'), 'preview report is not implemented')
         from gsd_cli.preview import compare
@@ -96,10 +110,10 @@ class PreviewCliTests(unittest.TestCase):
         self.assertIn('Check', result.stdout)
         self.assertIn('gsd-planner', result.stdout)
         self.assertIn('fable-review', result.stdout)
-        self.assertIn('UNKNOWN', result.stdout)
-        data = json.loads(result.stdout.split('Launcher effective configuration:\n', 1)[1])
-        self.assertEqual(data['models']['planning'], 'sonnet')
-        self.assertEqual(data['custom'], {'keep': True})
+        self.assertIn('?', result.stdout)
+        self.assertNotIn('Launcher effective configuration:', result.stdout)
+        self.assertIn('Agents this workflow may use', result.stdout)
+        self.assertNotIn('gsd-executor |', result.stdout)
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(self.log.exists())
 
@@ -111,8 +125,7 @@ class PreviewCliTests(unittest.TestCase):
         result = self.run_launcher('ship', 'claude', 'high', '--secure', '--config', '--', '--model', 'override')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('ship/claude/high', result.stdout)
-        self.assertIn('may override', result.stdout)
-        self.assertIn('override', result.stdout)
+        self.assertIn('forwarded options', result.stdout.lower())
         self.assertNotIn('--dangerously-skip-permissions', result.stdout)
         self.assertFalse(self.log.exists())
 
@@ -129,7 +142,7 @@ class PreviewCliTests(unittest.TestCase):
         result = self.run_launcher('exec', 'codex', '--config')
         self.assertEqual(result.returncode, 1)
         self.assertIn('INCOMPLETE', result.stdout)
-        self.assertIn('Launcher effective configuration:', result.stdout)
+        self.assertIn('Diagnostic:', result.stdout)
         self.assertEqual(self.snapshot(), before)
 
     def test_inherited_effort_keeps_complete_cli_report(self):
@@ -143,8 +156,8 @@ class PreviewCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('[COMPLETE]', result.stdout)
         self.assertNotIn('malformed resolver result', result.stdout)
-        row = next(line for line in result.stdout.splitlines() if line.startswith('gsd-executor |'))
-        self.assertIn('| inherit | inherit |', row)
+        self.assertIn('gsd-executor', result.stdout)
+        self.assertIn('inherit', result.stdout)
         self.assertEqual(self.snapshot(), before)
 
     def test_pending_capture_and_config_equal_normal_launch(self):
@@ -159,7 +172,9 @@ class PreviewCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('custom.keep', result.stdout)
         self.assertEqual(self.snapshot(), before)
-        expected = json.loads(result.stdout.split('Launcher effective configuration:\n', 1)[1])
+        details = self.run_launcher('plan', 'codex', '--config', '--details')
+        self.assertEqual(details.returncode, 0, details.stderr)
+        expected = json.loads(details.stdout.split('Launcher effective configuration:\n', 1)[1])
         self.assertEqual(self.run_launcher('plan', 'codex').returncode, 0)
         self.assertEqual(json.loads(self.config_path.read_text()), expected)
 
@@ -174,3 +189,27 @@ class PreviewCliTests(unittest.TestCase):
         result = self.run_launcher('ship', '--help', cwd=self.home)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--config', result.stdout)
+        self.assertIn('--details', result.stdout)
+
+    def test_details_requires_config_and_forwarded_details_is_child_option(self):
+        self.install()
+        self.assertNotEqual(self.run_launcher('plan', 'codex', '--details').returncode, 0)
+        result = self.run_launcher('plan', 'codex', '--config', '--details')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Launcher effective configuration:', result.stdout)
+        self.assertIn('Host effort argv:', result.stdout)
+        self.assertEqual(self.run_launcher('exec', 'codex', '--', '--details').returncode, 0)
+        self.assertEqual(json.loads(self.log.read_text())['args'][-1], '--details')
+
+    def test_compact_filters_workflow_phases_and_keeps_unknown_agent(self):
+        self.install()
+        p = self.policy()
+        p['agent_levels']['gsd-missing-role'] = 'low'
+        self.put_policy(p)
+        plan = self.run_launcher('plan', 'codex', '--config')
+        execution = self.run_launcher('exec', 'codex', '--config')
+        self.assertIn('configured agents have no phase metadata', plan.stdout)
+        self.assertIn('gsd-verifier', plan.stdout)
+        self.assertNotIn('gsd-planner', execution.stdout)
+        self.assertIn('gsd-verifier', execution.stdout)
+        self.assertIn('?', plan.stdout)
