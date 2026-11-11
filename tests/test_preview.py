@@ -1,7 +1,11 @@
 import copy
 import importlib
 import json
+import os
+import pty
 import shutil
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from resolver_fixtures import install_resolver
@@ -213,3 +217,45 @@ class PreviewCliTests(unittest.TestCase):
         self.assertNotIn('gsd-planner', execution.stdout)
         self.assertIn('gsd-verifier', execution.stdout)
         self.assertIn('?', plan.stdout)
+
+    def test_compact_includes_custom_task_level_phase(self):
+        self.install()
+        p = self.policy()
+        p['workflows']['ship'] = copy.deepcopy(p['workflows']['exec'])
+        p['workflows']['ship']['task_levels'] = {'planning': 'high'}
+        self.put_policy(p)
+        result = self.run_launcher('ship', 'codex', '--config')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('[planning]', result.stdout)
+        self.assertIn('gsd-planner', result.stdout)
+        self.assertIn('[execution]', result.stdout)
+        self.assertIn('gsd-executor', result.stdout)
+
+    def test_tty_colors_checks_and_no_color_disables_them(self):
+        self.install()
+        def tty_output(env):
+            master, slave = pty.openpty()
+            try:
+                result = subprocess.run([sys.executable, str(fixtures.LAUNCHER), 'plan', 'codex', '--config'],
+                                        cwd=self.project, env=env, stdout=slave, stderr=subprocess.PIPE, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                os.close(slave)
+                slave = -1
+                chunks = []
+                while True:
+                    try:
+                        chunks.append(os.read(master, 65536))
+                    except OSError:
+                        break
+                return b''.join(chunks).decode()
+            finally:
+                os.close(master)
+                if slave != -1:
+                    os.close(slave)
+        color_env = self.env.copy()
+        color_env.pop('NO_COLOR', None)
+        colored = tty_output(color_env)
+        self.assertIn('\x1b[', colored)
+        self.assertIn('✓', colored)
+        plain = tty_output({**self.env, 'NO_COLOR': ''})
+        self.assertNotIn('\x1b[', plain)
