@@ -106,7 +106,7 @@ Review the resulting diff, then commit the policy, default, `.gitignore` changes
 
 ## Project policy
 
-The complete example is [examples/gsd-config-example.json](../examples/gsd-config-example.json), a copy of the authoritative bundled starter. Do not paste it into `.planning/config.json`; it is the schema for **`gsd-cli.config.json`**.
+The complete example is [examples/gsd-config-example.json](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/blob/main/examples/gsd-config-example.json), a copy of the authoritative bundled starter. Do not paste it into `.planning/config.json`; it is the schema for **`gsd-cli.config.json`**.
 
 | Field | Contract |
 |---|---|
@@ -153,7 +153,7 @@ The installed Claude GSD agent Markdown files contain effort frontmatter. After 
 GSD_RUNTIME=claude node ~/.claude/gsd-core/bin/gsd-tools.cjs effort sync --dry-run
 ```
 
-If the preview is appropriate, the same command with `--apply` writes installed agent files. Those files may be global and shared by other projects. The launcher never performs this operation. In the inspected Codex installation, agent TOMLs have no static effort pins; runtime workflows resolve effort per agent where the spawn schema supports it. See the [audit](nodes/2026-11-10-gsd-performance-cost-audit.md) for version-specific evidence and workflow exceptions.
+If the preview is appropriate, the same command with `--apply` writes installed agent files. Those files may be global and shared by other projects. The launcher never performs this operation. In the inspected Codex installation, agent TOMLs have no static effort pins; runtime workflows resolve effort per agent where the spawn schema supports it. See [check commands](checks.md) for ways to inspect installed behavior and session evidence.
 
 To check actual resolver output without making model calls:
 

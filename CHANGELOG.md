@@ -19,6 +19,15 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Added
+
+- MkDocs user documentation covering the problem, solution, configuration, check
+  commands and best practices, with search and strict CI builds. Internal `nodes`
+  and `superpowers` tracking folders are excluded from the published site.
+- `task docs` serves documentation at `http://127.0.0.1:8010`, automatically
+  loading pinned documentation dependencies through uv. Additional MkDocs serve
+  options can be passed after `--`.
+
 ## [2.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.0) — 2026-11-13
 
 ### Changed

@@ -1,6 +1,12 @@
 version: '3'
 
 tasks:
+  docs:
+    desc: Serve the MkDocs documentation locally
+    dir: '{{.TASKFILE_DIR}}'
+    cmds:
+      - uv run --isolated --no-project --with-requirements docs/requirements.txt mkdocs serve {{.CLI_ARGS}}
+
   test:
     desc: Run the offline test suite in the active Python environment
     dir: '{{.TASKFILE_DIR}}'

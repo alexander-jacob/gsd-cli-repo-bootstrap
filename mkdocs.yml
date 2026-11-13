@@ -1,0 +1,27 @@
+site_name: GSD CLI
+dev_addr: 127.0.0.1:8010
+site_description: Reproducible runtime, model and reviewer settings for GSD workflows
+repo_url: https://github.com/alexander-jacob/gsd-cli-repo-bootstrap
+edit_uri: edit/main/docs/
+theme: readthedocs
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - fenced_code
+nav:
+  - The problem: index.md
+  - Why gsd-cli: solution.md
+  - Configuration: configuration.md
+  - Check commands: checks.md
+  - Best practices: best-practices.md
+  - Launcher reference: LAUNCHER.md
+exclude_docs: |
+  /nodes/
+  /superpowers/
+  /requirements.txt
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    anchors: warn

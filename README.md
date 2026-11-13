@@ -83,3 +83,22 @@ python -m unittest discover -s tests -v
 Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
 
 The [launcher guide](docs/LAUNCHER.md) covers configuration, migration, recovery and custom workflows. The [project assessment](docs/nodes/2026-11-10-project-assessment.md) records strengths and weaknesses of the original version; [implementation design](docs/nodes/2026-11-10-configurable-launcher-design.md) records the agreed direction.
+
+## Documentation
+
+The [user guide](docs/index.md) explains the problem, why gsd-cli helps,
+configuration, check commands and best practices. The MkDocs site uses the
+Read the Docs theme and search. With Task and uv installed, the docs task
+automatically loads the pinned documentation dependencies in an isolated
+environment; no virtualenv activation or global MkDocs installation is needed.
+
+```sh
+task docs
+uv run --isolated --no-project --with-requirements docs/requirements.txt mkdocs build --strict
+```
+
+The preview runs at `http://127.0.0.1:8010`. To use another port, run
+`task docs -- -a 127.0.0.1:8001`.
+
+Tracking folders `docs/nodes/` and `docs/superpowers/` are excluded from the site
+and search index. Generated output lives in the ignored `site/` directory.
