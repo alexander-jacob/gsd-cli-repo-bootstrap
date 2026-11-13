@@ -8,17 +8,18 @@ have not been assigned to a release in this document.
 | Status | Version | Release date |
 |---|---|---|
 | Unreleased | Not yet assigned | — |
+| Released | [2.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.0) | 2026-11-13 |
 
-The current package version in `pyproject.toml` is `2.0.0`. No release tags exist
-in the repository as of November 13, 2026; this changelog does not infer a
-published release from the package version. Earlier release history has not been
-backfilled.
+The current package version in `pyproject.toml` is `2.0.0`. Version 2.0.0 is the
+first release tracked here. Earlier release history has not been backfilled.
 
 When releasing, move the Unreleased entries into a versioned section with its
 release date (`YYYY-MM-DD`), update the tracking table and package version as
 appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
+
+## [2.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.0) — 2026-11-13
 
 ### Changed
 
