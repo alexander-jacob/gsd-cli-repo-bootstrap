@@ -54,7 +54,7 @@ Checks are offline and read-only. Explicit `CLAUDE_CONFIG_DIR`/`CODEX_HOME` over
 |---|---|---|---|
 | low | `claude-sonnet-5-5` / `sonnet` | `gpt-6-luna` | low |
 | medium | `claude-opus-5-5` / `opus` | `gpt-6.1-sol` | medium |
-| high | `claude-fable-5-1` / `fable` | `gpt-6-astra` | high |
+| high | `claude-fable-5-2` / `fable` | `gpt-6-astra` | high |
 
 Codex high execution deliberately uses medium **session** effort. Agent effort and reviewer effort are independent. Planning/discussion/research follow the selected plan level; execution follows the selected exec level. Verification stays high, and other phases reset to their explicit defaults each launch. Per-agent pins take precedence over phase levels.
 
@@ -63,6 +63,8 @@ The [performance/cost audit](docs/nodes/2026-11-10-gsd-performance-cost-audit.md
 Claude launches now pass `--effort`. **Claude subagent effort also depends on installed agent frontmatter**: project config alone does not update it. The launcher warns and never modifies your global agent definitions. See the [effort synchronization instructions](docs/LAUNCHER.md#effort-and-gsd-routing).
 
 Each preset explicitly selects the opposite runtime's reviewer plus Grok and Gemini. DeepSeek is defined but inactive. Reviewers remain independent of the selected model level. This choice does not detect who authored an earlier plan; configure another preset if you need a different roster. OpenCode/OpenRouter reviewers are metered.
+
+The starter reviewers use Fable 5.2, GPT-6 Astra, Grok 4.7 and Gemini 4 Carbon; the optional DeepSeek reviewer uses V4.1 Flash 1017. Carbon targets demanding reviews and can use more reasoning tokens than Argon. These starter updates do not overwrite existing project policy; update the model IDs in `gsd-cli.config.json` for existing projects.
 
 Claude planning uses normal permissions; Codex planning and both execution presets bypass approval prompts by default. `--secure` suppresses the launcher-inserted bypass. Custom workflows must state permissions explicitly. Billing guards check environment variables for both the session and selected reviewer adapters.
 

@@ -28,7 +28,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(result['values'][('models', 'execution')], 'opus')
         self.assertEqual(result['values'][('models', 'verification')], 'opus')
         self.assertEqual(result['values'][('model_overrides', 'gsd-codebase-mapper')], 'gpt-6.1-sol')
-        self.assertEqual(result['values'][('review', 'reviewer_instances', 'fable-review')]['model'], 'claude-fable-5-1')
+        self.assertEqual(result['values'][('review', 'reviewer_instances', 'fable-review')]['model'], 'claude-fable-5-2')
 
     def test_no_hidden_fallback(self):
         edits = [

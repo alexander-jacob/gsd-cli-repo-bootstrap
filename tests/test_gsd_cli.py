@@ -105,7 +105,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
                     with self.subTest(workflow=workflow, runtime=runtime, level=level):
                         result = self.run_launcher(workflow, runtime, level)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                        model = {'claude': {'low': 'claude-sonnet-5-5', 'medium': 'claude-opus-5-5', 'high': 'claude-fable-5-1'},
+                        model = {'claude': {'low': 'claude-sonnet-5-5', 'medium': 'claude-opus-5-5', 'high': 'claude-fable-5-2'},
                                  'codex': {'low': 'gpt-6-luna', 'medium': 'gpt-6.1-sol', 'high': 'gpt-6-astra'}}[runtime][level]
                         expected = {'model': model, 'effort': 'medium' if (workflow, runtime, level) == ('exec', 'codex', 'high') else level,
                                     'permissions': 'normal' if (workflow, runtime) == ('plan', 'claude') else 'bypass',
