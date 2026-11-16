@@ -62,6 +62,23 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(self.envelope(result)['error']['kind'], 'usage')
 
+    def test_short_flag_clusters_win_over_json_like_click_accepts_them(self):
+        version = f"gsd-cli {importlib.metadata.version('gsd-workflow-cli')}\n"
+        for args in (('--json', '-hV'), ('-hV', '--json'), ('status', '--json', '-hh')):
+            with self.subTest(args):
+                result = self.run_launcher(*args, cwd=self.root)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+                self.assertTrue(result.stdout.startswith('Usage:'), result.stdout)
+        result = self.run_launcher('--json', '-Vh', cwd=self.root)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, version, ''))
+
+    def test_short_flag_clusters_click_rejects_stay_usage_envelopes(self):
+        for args in (('--json', '-hX'), ('status', '--json', '-hV')):
+            with self.subTest(args):
+                result = self.run_launcher(*args, cwd=self.root)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.envelope(result)['error']['kind'], 'usage')
+
     def test_package_version_without_metadata(self):
         with mock.patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
             self.assertEqual(cli.package_version(), 'unknown')

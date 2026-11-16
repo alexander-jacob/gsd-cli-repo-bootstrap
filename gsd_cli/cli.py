@@ -2,6 +2,7 @@
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -263,6 +264,17 @@ def json_command(args: list[str]) -> str | None:
     return None if args[0] in RESERVED else 'preview'
 
 
+def help_or_version(args: list[str]) -> bool:
+    """True when Click will print help or the version for these arguments.
+
+    Mirrors Click's parsing: a short-flag cluster counts only when every letter is valid where it
+    stands. Before the command name that is -h and -V; after it, only -h.
+    """
+    command = next((i for i, a in enumerate(args) if not a.startswith('-')), len(args))
+    return (any(a == '--help' or re.fullmatch(r'-h+', a) for a in args)
+            or any(a == '--version' or re.fullmatch(r'-[hV]+', a) for a in args[:command]))
+
+
 def fail_json(args: list[str], kind: str, message: str, code: int) -> NoReturn:
     sys.stdout.write(dump(failure(json_command(args), kind, message)))
     sys.stdout.flush()
@@ -281,9 +293,8 @@ def main():
             click.echo('Error: forwarding after -- is supported only for workflow launches', err=True)
             raise SystemExit(2)
     json_mode = '--json' in args
-    top_level = args[:next((i for i, a in enumerate(args) if not a.startswith('-')), len(args))]
-    if json_mode and (any(a in ('-h', '--help') for a in args) or any(a in ('-V', '--version') for a in top_level)):
-        args, json_mode = [a for a in args if a != '--json'], False  # Help, and top-level version, win over JSON.
+    if json_mode and help_or_version(args):
+        args, json_mode = [a for a in args if a != '--json'], False  # Help and version win over JSON.
     try:
         cli.main(args=args, prog_name='gsd-cli', obj={'forwarded': forwarded, 'json': json_mode}, standalone_mode=False)
     except sessions.SessionsError as exc:

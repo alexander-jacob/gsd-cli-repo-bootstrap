@@ -23,6 +23,12 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Fixed
+
+- Combined short flags such as `-hV` or `-Vh` now print help or the version when `--json` is
+  also given, as they do without it. Before, `--json` made them a JSON usage error. Clusters that
+  Click rejects, such as `-hX`, still give the usage envelope.
+
 ## [2.1.2](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.2) — 2026-11-16
 
 ### Fixed
