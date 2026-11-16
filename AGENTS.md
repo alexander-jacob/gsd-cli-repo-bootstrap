@@ -13,10 +13,10 @@
 
 ## Build, Test, and Development Commands
 
-Use Python 3.10+ on POSIX, with Click and Pydantic installed in a virtual environment. Install with `pipx install .`; develop with `python -m pip install -e .` in a venv.
+Use Python 3.10+ on POSIX, with Click and Pydantic installed in a virtual environment. Install with `pipx install .`; develop with `python -m pip install -e '.[test]'` in a venv (the `test` extra adds pytest and pytest-xdist).
 
 - `python -m gsd_cli --help`: read-only help, including outside a project. `gsd-cli --version` (`-V`) prints the installed version from package metadata; an editable install keeps reporting the version from its last `pip install -e .`, and `python -m gsd_cli` from the repo root can read a leftover build `*.egg-info`, so reinstall after bumping `pyproject.toml`.
-- `python -m unittest discover -s tests -v`: full offline suite.
+- `python -m pytest -n auto tests`: full offline suite. Always run tests with `-n auto` so they spread over all CPUs, including single test files (`python -m pytest -n auto tests/test_preview.py`). Tests stay unittest-style; pytest only runs them.
 - `gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [-- CHILD_ARGS...]`: explicit workflow/runtime, medium default. Never automatically invoke GSD skills.
 - `gsd-cli check [claude|codex]`: read-only version diagnostics; check both when omitted, exit nonzero on any failure.
 - `gsd-cli init`: migrate/seed complete policy and tracked defaults, preserving working config.
@@ -36,7 +36,7 @@ Use Python 3.10+ on POSIX, with Click and Pydantic installed in a virtual enviro
 
 ## Coding and Testing Guidelines
 
-Use four-space Python indentation, descriptive snake_case names, two-space JSON and unittest. Keep Click at the CLI boundary; domain logic must be usable without a Click context. Avoid dependencies beyond Click, Pydantic and the standard library. Pydantic defines machine-readable output and its schemas only.
+Use four-space Python indentation, descriptive snake_case names, two-space JSON and unittest. Keep Click at the CLI boundary; domain logic must be usable without a Click context. Avoid runtime dependencies beyond Click, Pydantic and the standard library; pytest and pytest-xdist are test-only, in the `test` extra. Pydantic defines machine-readable output and its schemas only.
 
 Test argument forwarding at the first `--`, both runtime/level combinations, custom workflows, permissions, billing by adapter, missing executable preflight, logs, historical session compatibility, default stability, recursive capture conflicts, stale ownership, Git migration and interrupted-write recovery. Tests must not use real credentials or paid model calls. Use actual temporary files for persistence checks.
 

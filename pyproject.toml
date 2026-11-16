@@ -9,6 +9,9 @@ description = "Project-owned workflow presets for GSD, Claude and Codex"
 requires-python = ">=3.10"
 dependencies = ["click>=8.1,<9", "pydantic>=2,<3"]
 
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-xdist>=3"]
+
 [project.scripts]
 gsd-cli = "gsd_cli.cli:main"
 
