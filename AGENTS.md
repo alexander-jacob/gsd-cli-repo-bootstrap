@@ -46,6 +46,10 @@ Use concise, imperative subjects such as `Fix execution profile reviewer preserv
 
 Pull requests should describe the behavior changed, explain why, link relevant issues, and include the test command and result. Update examples and documentation for user-visible changes.
 
+## Release Process
+
+Follow `docs/releasing.md`. In short: one change per branch, squash-merged into `main`; documentation-only changes need no release. A gsd-cli release is a `Release version X.Y.Z` commit (version in `pyproject.toml`, `CHANGELOG.md` table, version sentence and dated section, empty `Unreleased` kept), a suite run on 3.10 and 3.11, a clean `uv build` smoke-tested from a fresh venv, an annotated `vX.Y.Z` tag, `git push origin main vX.Y.Z`, and a GitHub release with the wheel and sdist. When the skill in `jacob-consulting/skills` must require the new release, raise its requirement there, release the plugin with `scripts/release.sh gsd-cli X.Y.Z` (minor bump), note it in the marketplace changelog, release the marketplace, push with `--follow-tags`, and update the plugin in Claude Code and Codex. Tags, pushes, releases and installs are outward-facing: do them only when the maintainer asks.
+
 ## Security & Configuration
 
 Never commit API keys, CLI authentication files, or local `.planning/` state. Project policy and `.planning/config.default.json` are intentionally tracked; effective config, baseline, lock and journal are ignored. Preserve subscription billing guards and atomic configuration writes. Use separate worktrees for concurrent sessions that modify project settings.

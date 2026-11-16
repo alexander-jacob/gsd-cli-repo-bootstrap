@@ -17,6 +17,7 @@ nav:
   - Machine-readable output: json-output.md
   - Best practices: best-practices.md
   - Launcher reference: LAUNCHER.md
+  - Releasing: releasing.md
 exclude_docs: |
   /nodes/
   /superpowers/
