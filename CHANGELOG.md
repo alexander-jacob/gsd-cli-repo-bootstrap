@@ -8,10 +8,11 @@ have not been assigned to a release in this document.
 | Status | Version | Release date |
 |---|---|---|
 | Unreleased | Not yet assigned | — |
+| Released | [2.1.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.0) | 2026-11-16 |
 | Released | [2.0.1](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.1) | 2026-11-13 |
 | Released | [2.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.0) | 2026-11-13 |
 
-The current package version in `pyproject.toml` is `2.0.1`. Version 2.0.0 is the
+The current package version in `pyproject.toml` is `2.1.0`. Version 2.0.0 is the
 first release tracked here. Earlier release history has not been backfilled.
 
 When releasing, move the Unreleased entries into a versioned section with its
@@ -20,14 +21,16 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+## [2.1.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.0) — 2026-11-16
+
 ### Added
 
 - Machine-readable output: `--json` for `status`, `check`, `policy`, `sessions` and
   `WORKFLOW RUNTIME --config`. Each prints one envelope
   (`schema_version`, `command`, `ok`, `data`, `error`) and never writes.
   See `docs/json-output.md`.
-- `gsd-cli policy [--json]` validates and prints the project policy, with its
-  differences from the shipped starter.
+- `gsd-cli policy [--json]` validates the project policy; with `--json` it prints
+  the policy and its differences from the shipped starter.
 - `gsd-cli schema [NAME]` prints generated JSON Schemas for each output and for
   `gsd-cli.config.json`.
 - Coded findings in configuration previews (for example `installed_effort_mismatch`
