@@ -17,6 +17,7 @@ To update a local installation, use `pipx install --force /absolute/path/to/gsd-
 ## Commands and forwarding
 
 ```text
+gsd-cli --version
 gsd-cli init
 gsd-cli status [--json]
 gsd-cli check [claude|codex] [--json]

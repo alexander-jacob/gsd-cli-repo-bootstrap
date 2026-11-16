@@ -21,6 +21,11 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Added
+
+- `gsd-cli --version` (`-V`) prints the installed gsd-cli version. It works outside a project and
+  wins over `--json`.
+
 ## [2.1.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.0) — 2026-11-16
 
 ### Added

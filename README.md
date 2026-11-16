@@ -71,6 +71,7 @@ Claude planning uses normal permissions; Codex planning and both execution prese
 ## Inspection and development
 
 ```sh
+gsd-cli --version              # installed gsd-cli version (also -V)
 gsd-cli status
 gsd-cli policy                  # validate the project policy file; --json prints it
 gsd-cli schema [NAME]          # JSON Schemas for machine-readable output

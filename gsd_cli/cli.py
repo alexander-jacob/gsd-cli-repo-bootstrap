@@ -1,4 +1,5 @@
 """Click front end; policy and synchronization remain independent of Click."""
+import importlib.metadata
 import json
 import os
 import shutil
@@ -24,6 +25,14 @@ def project_policy(root: Path) -> dict:
     return policy
 
 
+def package_version() -> str:
+    """Installed gsd-cli version from package metadata; 'unknown' when not installed."""
+    try:
+        return importlib.metadata.version('gsd-workflow-cli')
+    except importlib.metadata.PackageNotFoundError:
+        return 'unknown'
+
+
 class WorkflowGroup(click.Group):
     def list_commands(self, ctx):
         names = set(super().list_commands(ctx))
@@ -44,6 +53,7 @@ class WorkflowGroup(click.Group):
 
 
 @click.group(cls=WorkflowGroup, context_settings={'help_option_names': ['-h', '--help']})
+@click.version_option(package_version(), '-V', '--version', prog_name='gsd-cli', message='%(prog)s %(version)s')
 def cli():
     """Open Claude/Codex with project-owned workflow presets.
 
@@ -271,8 +281,9 @@ def main():
             click.echo('Error: forwarding after -- is supported only for workflow launches', err=True)
             raise SystemExit(2)
     json_mode = '--json' in args
-    if json_mode and any(a in ('-h', '--help') for a in args):
-        args, json_mode = [a for a in args if a != '--json'], False  # Help wins over JSON.
+    top_level = args[:next((i for i, a in enumerate(args) if not a.startswith('-')), len(args))]
+    if json_mode and (any(a in ('-h', '--help') for a in args) or any(a in ('-V', '--version') for a in top_level)):
+        args, json_mode = [a for a in args if a != '--json'], False  # Help, and top-level version, win over JSON.
     try:
         cli.main(args=args, prog_name='gsd-cli', obj={'forwarded': forwarded, 'json': json_mode}, standalone_mode=False)
     except sessions.SessionsError as exc:

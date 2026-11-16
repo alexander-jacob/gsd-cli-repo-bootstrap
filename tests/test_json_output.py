@@ -1,11 +1,13 @@
 """JSON-mode envelope and error handling; no network or real model calls."""
 import copy
+import importlib.metadata
 import json
 import shutil
 import unittest
+from unittest import mock
 
 import test_gsd_cli as fixtures
-from gsd_cli import models
+from gsd_cli import cli, models
 from gsd_cli.models import CheckEnvelope, PolicyEnvelope, StatusEnvelope
 from test_versions import install_gsd
 
@@ -47,6 +49,22 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         result = self.run_launcher('--help', '--json')
         self.assertEqual(result.returncode, 0)
         self.assertIn('Usage:', result.stdout)
+
+    def test_version_prints_installed_version(self):
+        expected = f"gsd-cli {importlib.metadata.version('gsd-workflow-cli')}\n"
+        for args in (('--version',), ('-V',), ('--version', '--json'), ('--json', '--version')):
+            with self.subTest(args):
+                result = self.run_launcher(*args, cwd=self.root)  # outside any project
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, expected, ''))
+
+    def test_version_after_a_command_keeps_json_mode(self):
+        result = self.run_launcher('status', '--json', '--version', cwd=self.root)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.envelope(result)['error']['kind'], 'usage')
+
+    def test_package_version_without_metadata(self):
+        with mock.patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
+            self.assertEqual(cli.package_version(), 'unknown')
 
     def test_policy_and_schema_are_reserved_workflow_names(self):
         self.initialize()
