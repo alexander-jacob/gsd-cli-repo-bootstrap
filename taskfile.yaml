@@ -8,10 +8,10 @@ tasks:
       - uv run --isolated --no-project --with-requirements docs/requirements.txt mkdocs serve {{.CLI_ARGS}}
 
   test:
-    desc: Run the offline test suite in the active Python environment
+    desc: Run the offline test suite on all CPUs in the active Python environment (needs the test extra)
     dir: '{{.TASKFILE_DIR}}'
     cmds:
-      - python -m unittest discover -s tests -v
+      - python -m pytest -n auto tests {{.CLI_ARGS}}
 
   install:
     desc: Install the package, Click and Pydantic in a pipx environment

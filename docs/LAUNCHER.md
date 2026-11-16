@@ -194,14 +194,14 @@ New session records use the captured reviewer definitions. Legacy records remain
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
-python -m unittest discover -s tests -v
+python -m pip install -e '.[test]'
+python -m pytest -n auto tests
 python -m gsd_cli --help
 ```
 
 `gsd-cli --version` reads the version from package metadata, not from `pyproject.toml`. In a development checkout that metadata can be stale:
 
-- An editable install writes its metadata only when it is installed. After a version bump, it keeps reporting the old version until you rerun `python -m pip install -e .`.
+- An editable install writes its metadata only when it is installed. After a version bump, it keeps reporting the old version until you rerun `python -m pip install -e '.[test]'`.
 - `python -m gsd_cli` run from the repository root also sees a `gsd_workflow_cli.egg-info` directory left there by a package build, and may report that build's version instead.
 - A checkout that was never installed prints `gsd-cli unknown`.
 

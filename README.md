@@ -79,8 +79,8 @@ gsd-cli sessions [claude|codex] [--pick [N]]
 
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e .
-python -m unittest discover -s tests -v
+python -m pip install -e '.[test]'
+python -m pytest -n auto tests
 ```
 
 Add `--json` to `status`, `check`, `policy`, `sessions` and `WORKFLOW RUNTIME --config` for one JSON document per invocation; see [machine-readable output](docs/json-output.md). Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
