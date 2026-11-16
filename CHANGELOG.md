@@ -22,6 +22,12 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Fixed
+
+- A `NaN`, `Infinity` or `-Infinity` constant in a configuration or policy file is now reported as
+  a `config` error naming the file (`NaN is not valid JSON`). Before, text-mode `status`, previews and
+  JSON-mode previews crashed with a traceback, and `status --json` silently printed `null` in its place.
+
 ## [2.1.1](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.1) — 2026-11-16
 
 ### Added

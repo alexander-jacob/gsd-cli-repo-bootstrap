@@ -40,10 +40,15 @@ def safe_path(path: Path) -> None:
         raise ConfigError(f'Refusing symlink: {path}')
 
 
+def reject_constant(name: str):
+    """Python's json accepts NaN and Infinity; strict JSON, GSD and every writer here do not."""
+    raise ValueError(f'{name} is not valid JSON')
+
+
 def read_json(path: Path) -> dict:
     safe_path(path)
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        data = json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_constant)
     except (OSError, ValueError) as exc:
         raise ConfigError(f'Cannot read {path}: {exc}') from exc
     if not isinstance(data, dict):

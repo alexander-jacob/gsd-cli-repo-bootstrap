@@ -400,3 +400,16 @@ class ConfigTests(unittest.TestCase):
         (self.root / '.gitignore').write_text('*\n')
         self.init()
         self.assertEqual(subprocess.run(['git', 'check-ignore', '-q', '--no-index', '.gitignore'], cwd=self.root).returncode, 1)
+
+
+class ReadJsonTests(unittest.TestCase):
+    def test_non_finite_constants_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            for constant in ('NaN', 'Infinity', '-Infinity'):
+                with self.subTest(constant):
+                    path.write_text('{"a": {"b": %s}}' % constant)
+                    with self.assertRaisesRegex(config.ConfigError, f'{constant} is not valid JSON'):
+                        config.read_json(path)
+            path.write_text('{"a": 1.5e308, "b": -0.0}')
+            self.assertEqual(config.read_json(path), {'a': 1.5e308, 'b': -0.0})

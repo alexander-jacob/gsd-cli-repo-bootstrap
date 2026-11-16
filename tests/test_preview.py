@@ -443,6 +443,24 @@ class PreviewCliTests(unittest.TestCase):
         agent = next(a for a in env.data.agents if a.agent == 'gsd-unmanaged')
         self.assertEqual((agent.expected.model, agent.expected.effort), (5, ['high']))
 
+    def test_non_finite_config_values_are_a_config_error(self):
+        self.install()
+        effective = self.project / '.planning/config.json'
+        effective.write_text(json.dumps({**json.loads(effective.read_text()), 'gsd_cli_probe': float('nan')}))
+        for args in (('status', '--json'), ('plan', 'claude', '--config', '--json')):
+            with self.subTest(args):
+                result = self.run_launcher(*args)
+                self.assertEqual((result.returncode, result.stderr), (1, ''))
+                body = json.loads(result.stdout)
+                self.assertEqual((body['ok'], body['data'], body['error']['kind']), (False, None, 'config'))
+                self.assertIn('NaN is not valid JSON', body['error']['message'])
+        for args in (('status',), ('plan', 'claude', '--config')):
+            with self.subTest(args):
+                result = self.run_launcher(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertIn('NaN is not valid JSON', result.stderr)
+
     def test_hostile_values_stay_inside_json_strings(self):
         self.install()
         hostile = 'evil\x1b[31m-é'
