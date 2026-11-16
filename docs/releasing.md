@@ -9,8 +9,10 @@ line:
 | gsd-cli skill (plugin) | [`jacob-consulting/skills`](https://github.com/jacob-consulting/skills) | `plugins/gsd-cli/.claude-plugin/plugin.json` | `gsd-cli--vX.Y.Z` |
 | Skills marketplace | `jacob-consulting/skills` | `.claude-plugin/marketplace.json` → `metadata.version` | `marketplace--vX.Y.Z` |
 
-The skill depends on a minimum gsd-cli release and checks it with `gsd-cli --version`. When a gsd-cli release
-changes something the skill relies on, release gsd-cli first, then raise the skill's requirement.
+The skill depends on a minimum gsd-cli release and checks it with `gsd-cli --version`. **Every gsd-cli release is
+followed by a skill release that requires it**, even when the skill's instructions need no other change: release
+gsd-cli first, then raise the skill's requirement to the new version, so the skill always requires the current
+gsd-cli release.
 
 ## Develop on a branch
 
@@ -51,11 +53,12 @@ a minor release for new features or new reserved names, a major release for inco
 
 ## Release the skill
 
-Do this when the skill must require the new gsd-cli release, or when the skill itself changed. The skills
-repository's `RELEASING.md` describes its release script in detail.
+Do this after every gsd-cli release, and also whenever the skill itself changes. The skills repository's
+`RELEASING.md` describes its release script in detail.
 
 1. **Update the skill** on a branch in `jacob-consulting/skills`:
-    - raise the required version in `plugins/gsd-cli/skills/gsd-cli/SKILL.md` (the `gsd-cli --version` probe),
+    - raise the required version to the new gsd-cli release in `plugins/gsd-cli/skills/gsd-cli/SKILL.md` (the
+      `gsd-cli --version` probe),
       `plugins/gsd-cli/README.md` (the requirement and why) and the version rows of
       `plugins/gsd-cli/skills/gsd-cli/references/troubleshooting.md`;
     - document new behaviour the skill should rely on, such as new error messages, in the references;
@@ -64,7 +67,7 @@ repository's `RELEASING.md` describes its release script in detail.
 2. **Squash-merge** into `main` (subject `gsd-cli: …`) and delete the branch.
 3. **Release the plugin.** `scripts/release.sh gsd-cli X.Y.Z --dry-run`, check the diff, then run it without
    `--dry-run`. Raising the required gsd-cli version drops support for older gsd-cli releases, so it is a minor
-   bump of the plugin.
+   bump of the plugin, even for a gsd-cli patch release.
 4. **Release the marketplace** so it ships the new plugin version: add an entry under `## [Unreleased]` in the
    skills repository's root `CHANGELOG.md` (for example "The `gsd-cli` plugin is now at X.Y.Z, which requires
    gsd-cli A.B.C or later"), commit it, then `scripts/release.sh marketplace X.Y.Z --dry-run` and the real run.
