@@ -20,6 +20,30 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Added
+
+- Machine-readable output: `--json` for `status`, `check`, `policy`, `sessions` and
+  `WORKFLOW RUNTIME --config`. Each prints one envelope
+  (`schema_version`, `command`, `ok`, `data`, `error`) and never writes.
+  See `docs/json-output.md`.
+- `gsd-cli policy [--json]` validates and prints the project policy, with its
+  differences from the shipped starter.
+- `gsd-cli schema [NAME]` prints generated JSON Schemas for each output and for
+  `gsd-cli.config.json`.
+- Coded findings in configuration previews (for example `installed_effort_mismatch`
+  for effort drift) and a machine-readable `reason` on check results.
+
+### Changed
+
+- `sessions` resolves expected models and efforts through the non-mutating preview
+  bridge instead of running `gsd-tools.cjs`, and honours project-local and
+  overridden installations.
+- New runtime dependency: `pydantic>=2,<3`.
+- **Breaking:** `policy` and `schema` are now reserved workflow names; a project
+  policy that defines a workflow with either name must rename it.
+- Raise the starter policy `gsd.min_version` from `1.20.1` to `1.21.0`, the current
+  `@opengsd/gsd-core` release. Existing project policies are not modified.
+
 ## [2.0.1](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.1) — 2026-11-13
 
 ### Added

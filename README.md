@@ -19,7 +19,7 @@ Workflow and runtime are always explicit. You can define additional workflow nam
 
 ## Install and initialize
 
-Requires Python 3.10+, a POSIX system (Linux/macOS), pipx, Git for Git migration, GSD, and the CLI you intend to launch. Click is installed inside the pipx environment.
+Requires Python 3.10+, a POSIX system (Linux/macOS), pipx, Git for Git migration, GSD, and the CLI you intend to launch. Click and Pydantic are installed inside the pipx environment.
 
 ```sh
 pipx install /path/to/gsd-cli-repo-bootstrap
@@ -42,7 +42,7 @@ Before each launch, the launcher captures persistent GSD edits into the tracked 
 
 ## GSD minimum version
 
-Project policy requires `"gsd": {"min_version": "1.20.1"}`. The bundled default uses 1.20.1 as an editable project requirement, not a proven technical compatibility minimum. Older project policies must add this field explicitly; upgrades never overwrite their policy.
+Project policy requires `"gsd": {"min_version": "1.21.0"}`. The bundled default uses 1.21.0 as an editable project requirement, not a proven technical compatibility minimum. Older project policies must add this field explicitly; upgrades never overwrite their policy.
 
 Every workflow launch checks the selected runtime before capture, recovery or launch logging. An older, missing, unreadable or incomplete GSD installation **blocks launch**. `--secure` does not bypass this gate. `gsd-cli check [claude|codex]` reports installed version, required minimum and installation path; omitting the runtime checks both and exits nonzero if either fails.
 
@@ -72,6 +72,8 @@ Claude planning uses normal permissions; Codex planning and both execution prese
 
 ```sh
 gsd-cli status
+gsd-cli policy                  # validate the project policy file; --json prints it
+gsd-cli schema [NAME]          # JSON Schemas for machine-readable output
 gsd-cli sessions [claude|codex] [--pick [N]]
 
 python3 -m venv .venv
@@ -80,7 +82,7 @@ python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
+Add `--json` to `status`, `check`, `policy`, `sessions` and `WORKFLOW RUNTIME --config` for one JSON document per invocation; see [machine-readable output](docs/json-output.md). Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
 
 The [launcher guide](docs/LAUNCHER.md) covers configuration, migration, recovery and custom workflows. The [project assessment](docs/nodes/2026-11-10-project-assessment.md) records strengths and weaknesses of the original version; [implementation design](docs/nodes/2026-11-10-configurable-launcher-design.md) records the agreed direction.
 

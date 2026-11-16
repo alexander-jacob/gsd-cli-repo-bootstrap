@@ -140,25 +140,45 @@ def launch_record(state_home, project, runtime, profile, time, session_model, se
 
 RESOLVER_STUB = """#!/usr/bin/env python3
 import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "node-argv.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:2] != ["-e"]:
+    sys.exit("stub node: only the preview bridge protocol is supported")
+request = json.load(sys.stdin)
+with open(os.path.join(here, "node-requests.log"), "a", encoding="utf-8") as log:
+    log.write(json.dumps(request) + "\\n")
 table = json.loads({table!r})
-runtime, agent = os.environ.get("GSD_RUNTIME"), sys.argv[-1]
-try:
-    overrides = json.load(open(".planning/config.json")).get("model_overrides") or {{}}
-except (OSError, ValueError):
-    overrides = {{}}
-entry = table.get(runtime + ":" + agent)
-if agent in overrides:
-    entry = {{"model": overrides[agent], "effort": (entry or {{}}).get("effort")}}
-print(json.dumps(entry or {{"unknown_agent": True}}))
+config = json.load(open(".planning/config.json", encoding="utf-8"))
+overrides = config.get("model_overrides") or {{}}
+
+def result(model, effort, **extra):
+    return {{"model": model, "profile": "balanced", "effort": effort,
+             "effort_effective": effort, "effort_effective_source": "resolved",
+             "effort_propagation": None, "effort_param": None, "effort_rendered": None,
+             "effort_clamped": False, "fast_mode": False, "fast_mode_supported": False, **extra}}
+
+rows = []
+for agent in request["agents"]:
+    entry = table.get(request["runtime"] + ":" + agent)
+    if agent in overrides:
+        entry = {{"model": overrides[agent], "effort": (entry or {{}}).get("effort") or "inherit"}}
+    rows.append({{"agent": agent, "result": result(entry["model"], entry["effort"]) if entry
+                  else result("inherit", "inherit", unknown_agent=True)}})
+print(json.dumps({{"context": {{"config": config, "source": "root"}}, "rows": rows}}))
 """
 
 
 def install_resolver(home, bin_dir, table):
-    """Fake the GSD resolver: an empty gsd-tools.cjs plus a node stub answering
-    resolve-model from the snapshot's model_overrides, else table["runtime:agent"]."""
-    tools = Path(home) / ".claude" / "gsd-core" / "bin" / "gsd-tools.cjs"
-    tools.parent.mkdir(parents=True, exist_ok=True)
-    tools.write_text("", encoding="utf-8")
+    """Fake the preview bridge protocol: resolver modules in both runtimes' home
+    installations, a gsd-tools.cjs that must never run, and a node stub that logs
+    its argv and request, answering from the snapshot's model_overrides, else
+    table["runtime:agent"], else an unknown_agent row."""
+    for runtime in ("claude", "codex"):
+        bin_path = Path(home) / f".{runtime}" / "gsd-core" / "bin"
+        (bin_path / "lib").mkdir(parents=True, exist_ok=True)
+        (bin_path / "lib" / "commands.cjs").write_text("", encoding="utf-8")
+        (bin_path / "gsd-tools.cjs").write_text("", encoding="utf-8")
     node = Path(bin_dir) / "node"
     node.write_text(RESOLVER_STUB.format(table=json.dumps(table)), encoding="utf-8")
     node.chmod(0o755)

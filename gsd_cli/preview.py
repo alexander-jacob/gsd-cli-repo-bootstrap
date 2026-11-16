@@ -2,9 +2,11 @@
 import json
 import re
 from pathlib import Path
+from typing import NamedTuple
+
 import click
 
-from . import config
+from . import config, models
 
 
 def display(value) -> str:
@@ -20,50 +22,78 @@ def value_at(data: dict, *path):
     return None if value is config.MISSING else value
 
 
-def compare(model: str | None, effort: str | None, result: dict, runtime: str,
-            session_effort: str, forwarded: bool, aliases: dict) -> tuple[str, list[str]]:
-    notes, mismatches, unknown = [], [], []
+class Finding(NamedTuple):
+    code: str
+    severity: str  # 'mismatch' | 'unknown' | 'note'
+    message: str
+
+
+SEVERITY_ORDER = ('mismatch', 'unknown', 'note')
+CHECKS = {'OK': 'ok', 'NOT OK': 'mismatch', 'UNKNOWN': 'unknown'}
+
+
+def findings(model: str | None, effort: str | None, result: dict, runtime: str,
+             session_effort: str, forwarded: bool, aliases: dict) -> list[Finding]:
+    """Coded comparison findings, ordered mismatches, unknowns, then notes."""
+    found = []
+
+    def add(code, severity, message):
+        found.append(Finding(code, severity, message))
+
     actual_model = result.get('model')
     if model is None or actual_model is None:
-        unknown.append('model expectation or resolution unknown')
+        add('model_unknown', 'unknown', 'model expectation or resolution unknown')
     elif model != actual_model:
         if runtime == 'claude' and aliases.get(actual_model) == model:
-            notes.append('model alias equivalence confirmed by installed GSD catalog')
+            add('alias_equivalent', 'note', 'model alias equivalence confirmed by installed GSD catalog')
         else:
-            mismatches.append(f'model expected {display(model)}, resolved {display(actual_model)}')
+            add('model_mismatch', 'mismatch', f'model expected {display(model)}, resolved {display(actual_model)}')
     if effort is None or result.get('effort') is None:
-        unknown.append('effort expectation or resolution unknown')
+        add('effort_unknown', 'unknown', 'effort expectation or resolution unknown')
     elif effort != result['effort']:
-        mismatches.append(f'effort expected {display(effort)}, resolved {display(result["effort"])}')
+        add('effort_mismatch', 'mismatch', f'effort expected {display(effort)}, resolved {display(result["effort"])}')
     if result.get('effort_clamped'):
-        mismatches.append('effort clamped to ' + display(result.get('effort_rendered'))
-                          + ': ' + display(result.get('effort_clamp_reason')))
+        add('effort_clamped', 'mismatch', 'effort clamped to ' + display(result.get('effort_rendered'))
+            + ': ' + display(result.get('effort_clamp_reason')))
     if runtime == 'claude':
         source = result.get('effort_effective_source')
         observed = result.get('effort_effective')
         if source == 'frontmatter-absent' or (source == 'frontmatter' and observed == 'inherit'):
-            notes.append('installed effort inherits the session')
+            add('inherits_session_effort', 'note', 'installed effort inherits the session')
             if forwarded:
                 observed = None
-                unknown.append('forwarded options may override inherited session effort')
+                add('forwarded_may_override', 'unknown', 'forwarded options may override inherited session effort')
             else:
                 observed = session_effort
         elif source != 'frontmatter':
             observed = None
-            unknown.append('installed Claude effort unknown; resolver supplied no file evidence')
+            add('installed_effort_unknown', 'unknown',
+                'installed Claude effort unknown; resolver supplied no file evidence')
         expected_installed = effort
         if effort == 'inherit':
             expected_installed = None if forwarded else session_effort
             if forwarded:
-                unknown.append('requested inherited effort depends on forwarded session options')
+                add('inherit_depends_on_forwarded', 'unknown',
+                    'requested inherited effort depends on forwarded session options')
         if expected_installed is not None and observed is not None and expected_installed != observed:
-            mismatches.append(f'installed effort expected {display(expected_installed)}, found {display(observed)}')
+            add('installed_effort_mismatch', 'mismatch',
+                f'installed effort expected {display(expected_installed)}, found {display(observed)}')
     elif not result.get('effort_propagation') or result.get('effort_rendered') is None:
-        unknown.append('runtime effort propagation unsupported or unknown')
+        add('propagation_unknown', 'unknown', 'runtime effort propagation unsupported or unknown')
     if result.get('unknown_agent'):
-        unknown.append('agent is not registered in the installed GSD catalog')
-    notes = mismatches + unknown + notes
-    return ('NOT OK' if mismatches else 'UNKNOWN' if unknown else 'OK'), notes
+        add('unregistered_agent', 'unknown', 'agent is not registered in the installed GSD catalog')
+    return sorted(found, key=lambda f: SEVERITY_ORDER.index(f.severity))
+
+
+def status(found: list[Finding]) -> str:
+    severities = {f.severity for f in found}
+    return 'NOT OK' if 'mismatch' in severities else 'UNKNOWN' if 'unknown' in severities else 'OK'
+
+
+def compare(model: str | None, effort: str | None, result: dict, runtime: str,
+            session_effort: str, forwarded: bool, aliases: dict) -> tuple[str, list[str]]:
+    found = findings(model, effort, result, runtime, session_effort, forwarded, aliases)
+    return status(found), [f.message for f in found]
 
 
 def expectations(data: dict, agent: str, meta: dict, runtime: str) -> tuple:
@@ -90,6 +120,70 @@ def expectations(data: dict, agent: str, meta: dict, runtime: str) -> tuple:
     return model, effort, source, effort_source
 
 
+def agent_names(data: dict, inspection: dict) -> list[str]:
+    """Every registered or configured agent, sorted by phase and then name."""
+    catalog = inspection['catalog']
+    names = set(catalog) | set(inspection['agents'])
+    for key in (('model_overrides',), ('effort', 'agent_overrides')):
+        configured = value_at(data, *key)
+        if isinstance(configured, dict):
+            names.update(configured)
+    return sorted(names, key=lambda a: (str(catalog.get(a, {}).get('phaseType', 'unknown')), a))
+
+
+def reviewer_rows(data: dict, resolved: dict) -> list[tuple]:
+    """(name, adapter, model, effort) for each selected reviewer, as configured."""
+    rows = []
+    for name in resolved['reviewers']:
+        reviewer = value_at(data, 'review', 'reviewer_instances', name) or {}
+        adapter = reviewer.get('cli')
+        effort = value_at(data, 'review', 'effort', adapter) if isinstance(adapter, str) else None
+        rows.append((name, adapter, reviewer.get('model'), effort))
+    return rows
+
+
+def workflow_phases(policy: dict, workflow: str) -> set:
+    return set(policy['workflows'][workflow]['tasks']) | set(policy['workflows'][workflow]['task_levels'])
+
+
+def report(root: Path, workflow: str, runtime: str, level: str, policy: dict,
+           resolved: dict, data: dict, captured: list[str], argv: list[str],
+           forwarded: list[str], inspection: dict) -> models.PreviewData:
+    """The configuration preview as a machine-readable payload; same evidence as render."""
+    catalog, results = inspection['catalog'], inspection['agents']
+    phases = workflow_phases(policy, workflow)
+    rows = []
+    for agent in agent_names(data, inspection):
+        meta = catalog.get(agent, {})
+        phase = meta.get('phaseType', 'unknown')
+        model, effort, model_source, effort_source = expectations(data, agent, meta, runtime)
+        result = results.get(agent)
+        found = findings(model, effort, result or {}, runtime, resolved['effort'], bool(forwarded),
+                         inspection.get('aliases', {}))
+        rows.append(models.AgentRow(
+            agent=agent, phase=str(phase), in_workflow=phase in phases,
+            expected=models.Expected(model=model, effort=effort, model_source=model_source,
+                                     effort_source=effort_source),
+            resolved=result, check=CHECKS[status(found)],
+            findings=[models.FindingModel(**f._asdict()) for f in found]))
+    context = inspection.get('context', {})
+    gsd_context = None
+    if context:
+        gsd_context = models.GsdContext(source=context.get('source'), workstream=inspection.get('workstream', ''),
+                                        loader_differences=config.changed_paths(data, context.get('config', {})))
+    return models.PreviewData(
+        project=str(root.resolve()), workflow=workflow, runtime=runtime, level=level,
+        complete=inspection['complete'],
+        session=models.SessionRequest(
+            model=resolved['model'], effort=resolved['effort'],
+            permissions='bypass' if any(a.startswith('--dangerously-') for a in argv) else 'normal',
+            argv=argv, forwarded=forwarded),
+        reviewers=[models.ReviewerRow(name=n, cli=c, model=m, effort=e) for n, c, m, e in reviewer_rows(data, resolved)],
+        installation=models.CheckEntry(**inspection['installation']),
+        agents=rows, gsd_context=gsd_context, pending_capture=captured,
+        diagnostics=inspection['diagnostics'], config=data)
+
+
 def render(root: Path, workflow: str, runtime: str, level: str, policy: dict,
            resolved: dict, data: dict, captured: list[str], argv: list[str],
            forwarded: list[str], inspection: dict) -> str:
@@ -112,13 +206,8 @@ def render(root: Path, workflow: str, runtime: str, level: str, policy: dict,
               'GSD agents (all registered/configured roles; this is not a workflow execution trace)',
               'Agent | Requested model | GSD model | Requested effort | GSD effort | Installed effort | Check']
     catalog, agents = inspection['catalog'], inspection['agents']
-    names = set(catalog) | set(agents)
-    for key in (('model_overrides',), ('effort', 'agent_overrides')):
-        configured = value_at(data, *key)
-        if isinstance(configured, dict):
-            names.update(configured)
     phase_before = None
-    for agent in sorted(names, key=lambda a: (str(catalog.get(a, {}).get('phaseType', 'unknown')), a)):
+    for agent in agent_names(data, inspection):
         meta = catalog.get(agent, {})
         phase = meta.get('phaseType', 'unknown')
         if phase != phase_before:
@@ -151,11 +240,8 @@ def render(root: Path, workflow: str, runtime: str, level: str, policy: dict,
         lines.append('GSD loader differences (defaults/normalization/overlays): ' + display(differences))
     lines += ['', 'External reviewers (configured values; provider execution is unknown)',
               'Reviewer | Adapter | Model | Effort | Check']
-    for name in resolved['reviewers']:
-        reviewer = value_at(data, 'review', 'reviewer_instances', name) or {}
-        adapter = reviewer.get('cli')
-        effort = value_at(data, 'review', 'effort', adapter) if isinstance(adapter, str) else None
-        lines.append(' | '.join(display(v) for v in (name, adapter, reviewer.get('model'), effort, 'UNKNOWN')))
+    for row in reviewer_rows(data, resolved):
+        lines.append(' | '.join(display(v) for v in (*row, 'UNKNOWN')))
     lines += ['', 'Pending persistent capture (not saved): ' + display(captured),
               'Checks: OK=matches evidence; NOT OK=known mismatch; UNKNOWN=insufficient evidence.']
     for diagnostic in inspection['diagnostics']:
@@ -195,7 +281,7 @@ def render_compact(root: Path, workflow: str, runtime: str, level: str, policy: 
              f'Project: {display(str(root))}',
              f'Session request: {display(resolved["model"])} | effort {display(resolved["effort"])} | ? actual run unknown',
              'Agents this workflow may use (configured → GSD resolved; no session was run)']
-    phases = set(policy['workflows'][workflow]['tasks']) | set(policy['workflows'][workflow]['task_levels'])
+    phases = workflow_phases(policy, workflow)
     catalog, agents = inspection['catalog'], inspection['agents']
     configured = set()
     for key in (('model_overrides',), ('effort', 'agent_overrides')):

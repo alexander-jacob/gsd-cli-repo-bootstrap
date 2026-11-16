@@ -51,7 +51,7 @@ class PolicyTests(unittest.TestCase):
                 validate(policy)
 
     def test_required_gsd_minimum_and_reserved_check_workflow(self):
-        self.assertEqual(self.policy['gsd']['min_version'], '1.20.1')
+        self.assertEqual(self.policy['gsd']['min_version'], '1.21.0')
         for value in (None, {}, {'min_version': '1.2'}, {'min_version': True}, {'min_version': '1.20.1', 'on_failure': 'warn'}):
             p = copy.deepcopy(self.policy)
             p['gsd'] = value

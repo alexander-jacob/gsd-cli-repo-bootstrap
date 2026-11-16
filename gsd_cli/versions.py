@@ -68,6 +68,7 @@ class CheckResult:
     minimum: str
     ok: bool
     message: str
+    reason: str  # 'ok' | 'below_minimum' | 'unverifiable'
 
 
 def installation_dir(root: Path, runtime: str, env: Mapping[str, str], home: Path) -> Path:
@@ -120,10 +121,10 @@ def check_installation(root: Path, runtime: str, minimum: str, *,
             if not path.is_file():
                 raise VersionError(f'incomplete installation: {name} is missing or not a regular file')
         if actual < required:
-            return CheckResult(runtime, directory, installed, minimum, False, 'below the project minimum')
+            return CheckResult(runtime, directory, installed, minimum, False, 'below the project minimum', 'below_minimum')
     except (OSError, UnicodeError, VersionError) as exc:
-        return CheckResult(runtime, directory, installed, minimum, False, f'Cannot verify GSD VERSION/install: {exc}')
-    return CheckResult(runtime, directory, installed, minimum, True, 'meets the project minimum')
+        return CheckResult(runtime, directory, installed, minimum, False, f'Cannot verify GSD VERSION/install: {exc}', 'unverifiable')
+    return CheckResult(runtime, directory, installed, minimum, True, 'meets the project minimum', 'ok')
 
 
 def format_result(result: CheckResult) -> str:

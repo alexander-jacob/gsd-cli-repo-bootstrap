@@ -101,7 +101,7 @@ project requires, then retry. Do not replace the rest of the policy:
 
 ```json
 "gsd": {
-  "min_version": "1.20.1"
+  "min_version": "1.21.0"
 }
 ```
 

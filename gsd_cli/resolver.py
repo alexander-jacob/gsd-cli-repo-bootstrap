@@ -71,6 +71,53 @@ def validate_result(value) -> bool:
             and isinstance(value.get('fast_mode_supported'), bool))
 
 
+def run_bridge(installation: Path, runtime: str, snapshots: dict[str, dict],
+               agents: list[str], env: dict) -> tuple[dict, list[str]]:
+    """Resolve agents against snapshot configs in a disposable project.
+
+    Returns (payload with 'context' and 'rows', stderr lines). Raises
+    ConfigError (carrying any stderr lines) on a failed or malformed answer.
+    """
+    node = shutil.which('node')
+    if not node:
+        raise FileNotFoundError('Node is unavailable')
+    # This bridge deliberately never invokes gsd-tools.cjs: its bootstrap
+    # can build/repair the installed library, even for a query command.
+    bridge = files('gsd_cli').joinpath('data/preview-resolver.cjs').read_text(encoding='utf-8')
+    with tempfile.TemporaryDirectory(prefix='gsd-cli-preview-') as temp:
+        scratch = Path(temp)
+        for relative, snapshot in snapshots.items():
+            path = scratch / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(config.serialize(snapshot), encoding='utf-8')
+        # GSD io's large-output spill/reaping, if needed, is private too.
+        env = dict(env, TMPDIR=temp, TMP=temp, TEMP=temp)
+        query = {'installation': str(installation), 'runtime': runtime, 'agents': agents}
+        completed = subprocess.run([node, '-e', bridge], input=json.dumps(query), cwd=scratch,
+                                   env=env, text=True, capture_output=True, timeout=QUERY_TIMEOUT)
+    stderr = completed.stderr.strip().splitlines()
+
+    def fail(message):
+        error = config.ConfigError(message)
+        error.stderr = stderr
+        return error
+
+    if completed.returncode:
+        raise fail(f'GSD resolver exited {completed.returncode}')
+    if len(completed.stdout) > OUTPUT_LIMIT:
+        raise fail('GSD resolver output exceeds the preview limit')
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError as exc:
+        raise fail(str(exc)) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get('context'), dict) or not isinstance(payload.get('rows'), list):
+        raise fail('Malformed GSD resolver response')
+    context = payload['context']
+    if not isinstance(context.get('config'), dict) or not isinstance(context.get('source'), str):
+        raise fail('Malformed GSD configuration context')
+    return payload, stderr
+
+
 def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
     version = check_installation(root, runtime, minimum)
     result = {'installation': {**asdict(version), 'directory': str(version.directory)},
@@ -100,33 +147,13 @@ def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
         env = query_environment(root, runtime)
         result['workstream'] = env.get('GSD_WORKSTREAM', '').strip()
         snapshots = snapshot_configs(root, data, env)
-        # This bridge deliberately never invokes gsd-tools.cjs: its bootstrap
-        # can build/repair the installed library, even for a query command.
-        bridge = files('gsd_cli').joinpath('data/preview-resolver.cjs').read_text(encoding='utf-8')
-        with tempfile.TemporaryDirectory(prefix='gsd-cli-preview-') as temp:
-            scratch = Path(temp)
-            for relative, snapshot in snapshots.items():
-                path = scratch / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(config.serialize(snapshot), encoding='utf-8')
-            # GSD io's large-output spill/reaping, if needed, is private too.
-            env.update(TMPDIR=temp, TMP=temp, TEMP=temp)
-            query = {'installation': str(version.directory), 'runtime': runtime,
-                     'agents': sorted(catalog)}
-            completed = subprocess.run([node, '-e', bridge], input=json.dumps(query), cwd=scratch,
-                                       env=env, text=True, capture_output=True, timeout=QUERY_TIMEOUT)
-        if completed.stderr.strip():
-            diagnostics.extend(completed.stderr.strip().splitlines())
-        if completed.returncode:
-            raise config.ConfigError(f'GSD resolver exited {completed.returncode}')
-        if len(completed.stdout) > OUTPUT_LIMIT:
-            raise config.ConfigError('GSD resolver output exceeds the preview limit')
-        payload = json.loads(completed.stdout)
-        if not isinstance(payload, dict) or not isinstance(payload.get('context'), dict) or not isinstance(payload.get('rows'), list):
-            raise config.ConfigError('Malformed GSD resolver response')
+        try:
+            payload, stderr = run_bridge(version.directory, runtime, snapshots, sorted(catalog), env)
+        except config.ConfigError as exc:
+            diagnostics.extend(getattr(exc, 'stderr', []))
+            raise
+        diagnostics.extend(stderr)
         context = payload['context']
-        if not isinstance(context.get('config'), dict) or not isinstance(context.get('source'), str):
-            raise config.ConfigError('Malformed GSD configuration context')
         result['context'] = context
         errors = bool(context.get('degraded'))
         if errors:

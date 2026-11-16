@@ -31,6 +31,10 @@ interrupted writes.
 resolver using a temporary snapshot. It compares configured models and efforts
 with available resolver evidence. `sessions` helps inspect the resulting logs.
 This makes configuration discrepancies visible before and after a launch.
+Every inspection command can also print JSON (`--json`), with published schemas
+(`gsd-cli schema`), so scripts and agent skills can read the same evidence; see
+[machine-readable output](json-output.md). Click and Pydantic are the only
+runtime dependencies.
 
 ## Check compatibility before changing configuration
 

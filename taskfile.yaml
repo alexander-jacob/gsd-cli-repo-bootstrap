@@ -14,7 +14,7 @@ tasks:
       - python -m unittest discover -s tests -v
 
   install:
-    desc: Install the package and Click in a pipx environment
+    desc: Install the package, Click and Pydantic in a pipx environment
     dir: '{{.TASKFILE_DIR}}'
     cmds:
       - pipx install .

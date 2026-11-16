@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ from unittest import mock
 from session_fixtures import claude_session, codex_session, install_resolver, launch_record
 import test_gsd_cli
 from test_gsd_cli import LAUNCHER
+from gsd_cli.models import SessionsEnvelope
 
 
 def load_launcher():
@@ -34,7 +37,17 @@ class SessionsTestCase(unittest.TestCase):
         })
         patcher.start()
         self.addCleanup(patcher.stop)
+        for key in [k for k in os.environ if k.startswith("GSD_") or k in ("CLAUDE_CONFIG_DIR", "CODEX_HOME")]:
+            del os.environ[key]
         self.gsd = load_launcher()
+
+    def node_calls(self):
+        log = self.bin / "node-argv.log"
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    def node_requests(self):
+        log = self.bin / "node-requests.log"
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
     def agent(self, agent_id, **overrides):
         base = {"id": agent_id, "type": "gsd-executor", "requested": "sonnet",
@@ -391,7 +404,7 @@ class CheckTests(SessionsTestCase):
                              forwarded, config)
 
     def checked(self, session, launch, runtime="claude"):
-        resolver = self.gsd.Resolver()
+        resolver = self.gsd.Resolver(self.project)
         self.gsd.check(session, resolver, runtime, launch)
         return resolver
 
@@ -440,12 +453,12 @@ class CheckTests(SessionsTestCase):
 
     def test_resolver_caches_per_launch(self):
         install_resolver(self.home, self.bin, self.TABLE)
-        resolver = self.gsd.Resolver()
+        resolver = self.gsd.Resolver(self.project)
         launch = self.launch()
         with mock.patch.object(self.gsd.subprocess, "run", wraps=self.gsd.subprocess.run) as run:
             first = resolver.expected(launch, "gsd-executor")
             second = resolver.expected(launch, "gsd-executor")
-        self.assertEqual(first, {"model": "opus", "effort": "high"})
+        self.assertEqual((first["model"], first["effort"]), ("opus", "high"))
         self.assertEqual(second, first)
         self.assertEqual(run.call_count, 1)
 
@@ -501,6 +514,34 @@ class CheckTests(SessionsTestCase):
         resolver = self.checked(self.session(children=[agent]), self.launch())
         self.assertFalse(resolver.available)
         self.assertEqual(agent.marks, ["! asked opus, ran claude-sonnet-5-5"])
+
+    def test_resolver_uses_project_local_installation(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        (self.project / ".claude").mkdir()
+        (self.home / ".claude" / "gsd-core").rename(self.project / ".claude" / "gsd-core")
+        resolver = self.gsd.Resolver(self.project)
+        entry = resolver.expected(self.launch(), "gsd-executor")
+        self.assertTrue(resolver.available)
+        self.assertEqual(entry["model"], "opus")
+        self.assertEqual([r["installation"] for r in self.node_requests()],
+                         [str(self.project / ".claude" / "gsd-core")])
+
+    def test_resolver_uses_runtime_installation_for_codex(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        resolver = self.gsd.Resolver(self.project)
+        entry = resolver.expected(self.launch("codex", "gpt-6-astra", "medium"), "gsd-executor")
+        self.assertEqual(entry["model"], "gpt-6.1-sol")
+        [request] = self.node_requests()
+        self.assertTrue(request["installation"].endswith(".codex/gsd-core"), request)
+        self.assertEqual((request["runtime"], request["agents"]), ("codex", ["gsd-executor"]))
+
+    def test_resolver_ignores_launch_without_config(self):
+        install_resolver(self.home, self.bin, self.TABLE)
+        launch = {**self.launch(), "config": None}
+        resolver = self.gsd.Resolver(self.project)
+        self.assertIsNone(resolver.expected(launch, "gsd-executor"))
+        self.assertTrue(resolver.available)
+        self.assertEqual(self.node_calls(), [])
 
     def test_check_never_marks_missing_actual(self):
         install_resolver(self.home, self.bin, self.TABLE)
@@ -645,6 +686,82 @@ class SessionsCommandTests(SessionsTestCase):
         self.assertIn("asked sonnet  ran", agent_line)
         self.assertIn("ran claude-sonnet-5-5/high", agent_line)
 
+    def agent_session(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1")])
+        launch_record(self.root / "state", self.project, "claude", "exec-opus",
+                      START - timedelta(seconds=5), "claude-opus-5-5", None)
+
+    def test_sessions_never_executes_gsd_tools(self):
+        install_resolver(self.home, self.bin, {"claude:gsd-executor": {"model": "opus", "effort": "high"}})
+        self.agent_session()
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("! profile expects opus", result.stdout)
+        calls = self.node_calls()
+        self.assertTrue(calls)
+        for argv in calls:
+            self.assertEqual((len(argv), argv[0]), (2, "-e"))
+            self.assertNotIn("gsd-tools.cjs", argv[1])
+        self.assertNotIn("not available", result.stdout)
+
+    def test_resolver_unavailable_without_modules(self):
+        install_resolver(self.home, self.bin, {})
+        (self.home / ".claude" / "gsd-core" / "bin" / "lib" / "commands.cjs").unlink()
+        self.agent_session()
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("note: GSD resolver not available; profile comparison skipped", result.stdout)
+        self.assertEqual(self.node_calls(), [])
+
+    def test_bridge_failure_marks_unavailable(self):
+        install_resolver(self.home, self.bin, {})
+        (self.bin / "node").write_text(
+            '#!/bin/sh\necho "$1" >> "$(dirname "$0")/failed-calls.log"\necho broken >&2\nexit 1\n',
+            encoding="utf-8")
+        self.agent_session()
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("note: GSD resolver not available; profile comparison skipped", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        # The failure came from an actual bridge call, not from a missing installation.
+        self.assertEqual((self.bin / "failed-calls.log").read_text(encoding="utf-8"), "-e\n")
+
+    def test_runtime_without_installation_keeps_other_comparisons(self):
+        install_resolver(self.home, self.bin, {"claude:gsd-executor": {"model": "opus", "effort": "high"}})
+        (self.home / ".codex" / "gsd-core" / "bin" / "lib" / "commands.cjs").unlink()
+        self.agent_session()
+        codex_session(self.home, self.project, "x1", START + timedelta(hours=1), "gpt-6-luna", "low")
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("codex", result.stdout)
+        self.assertIn("! profile expects opus", result.stdout)
+        self.assertNotIn("not available", result.stdout)
+
+    def test_unusable_runtime_never_disables_the_other_runtime(self):
+        # The newer codex session is checked first and its installation is
+        # unusable; the older claude session must still be compared.
+        install_resolver(self.home, self.bin, {"claude:gsd-executor": {"model": "opus", "effort": "high"}})
+        (self.home / ".codex" / "gsd-core" / "bin" / "lib" / "commands.cjs").unlink()
+        self.agent_session()
+        later = START + timedelta(hours=1)
+        codex_session(self.home, self.project, "x1", later, "gpt-6-luna", "low",
+                      spawns=[{"call_id": "c1", "thread_id": "x1-child", "agent_type": "gsd-executor",
+                               "model": "gpt-6.1-sol", "effort": "high"}])
+        codex_session(self.home, self.project, "x1-child", later, "gpt-6.1-sol", "high",
+                      parent="x1", role="gsd-executor")
+        launch_record(self.root / "state", self.project, "codex", "exec-opus",
+                      later - timedelta(seconds=5), "gpt-6-luna", "low")
+        result = self.sessions()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(result.stdout.index("gpt-6-luna"), result.stdout.index("claude-opus-5-5"))
+        self.assertIn("! profile expects opus", result.stdout)
+        self.assertNotIn("not available", result.stdout)
+        env, _ = self.json_sessions("--json")
+        self.assertTrue(env.data.resolver_available)
+        claude = next(run for run in env.data.sessions if run.runtime == "claude")
+        self.assertEqual(claude.children[0].marks, ["! profile expects opus"])
+
     def test_sessions_writes_nothing(self):
         self.populate()
         launch_record(self.root / "state", self.project, "claude", "exec-opus",
@@ -665,6 +782,172 @@ class SessionsCommandTests(SessionsTestCase):
             result = self.sessions(*args)
             self.assertEqual(result.returncode, 1, args)
             self.assertIn("Usage: gsd-cli sessions", result.stderr)
+
+
+    # JSON output
+
+    def json_sessions(self, *args, env=None, code=0):
+        result = subprocess.run([sys.executable, str(LAUNCHER), "sessions", *args], cwd=self.project,
+                                env=env or self.env, capture_output=True, text=True, check=False,
+                                stdin=subprocess.DEVNULL)
+        self.assertEqual((result.returncode, result.stderr), (code, ""), result.stdout)
+        self.assertTrue(result.stdout.endswith("}\n"))
+        return SessionsEnvelope.model_validate_json(result.stdout, strict=True), result.stdout
+
+    def test_json_recent_sessions_with_children_and_launch(self):
+        install_resolver(self.home, self.bin, {})
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1")])
+        launch_record(self.root / "state", self.project, "claude", "exec/medium",
+                      START - timedelta(seconds=5), "claude-opus-5-5", "medium", forwarded=["--verbose"])
+        env, _ = self.json_sessions("--json")
+        self.assertTrue(env.ok)
+        self.assertIsNone(env.error)
+        self.assertEqual(env.data.project, str(self.project))
+        self.assertTrue(env.data.resolver_available)
+        s = env.data.sessions[0]
+        self.assertEqual((s.kind, s.runtime, s.launch.profile), ("session", "claude", "exec/medium"))
+        self.assertEqual((s.run_id, s.model, s.effort, s.marks, s.mismatch), ("s1", "claude-opus-5-5", "medium", [], False))
+        self.assertEqual((s.launch.session_model, s.launch.session_effort, s.launch.forwarded_args),
+                         ("claude-opus-5-5", "medium", ["--verbose"]))
+        self.assertEqual(s.start, "2026-10-01T09:00:00Z")
+        self.assertRegex(s.start, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertRegex(s.end, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        child = s.children[0]
+        self.assertEqual((child.kind, child.agent_type, child.requested_model, child.model),
+                         ("agent", "gsd-executor", "sonnet", "claude-sonnet-5-5"))
+        self.assertIsNone(child.launch)
+        self.assertEqual(env.data.older, [])
+
+    def test_json_marks_mismatch(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium")
+        launch_record(self.root / "state", self.project, "claude", "exec/medium",
+                      START - timedelta(seconds=5), "claude-fable-5-2", "medium")
+        env, _ = self.json_sessions("--json")
+        s = env.data.sessions[0]
+        self.assertEqual(s.marks, ["! profile expects claude-fable-5-2"])
+        self.assertTrue(s.mismatch)
+
+    def test_json_never_exports_embedded_configs(self):
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium")
+        record = {"time": (START - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "project": str(self.project), "runtime": "claude", "profile": "exec/medium",
+                  "session_model": "claude-opus-5-5", "session_effort": "medium", "forwarded_args": [],
+                  "config": {"note": "SECRET-MARKER"}, "gsd_defaults": {"note": "SECRET-MARKER"},
+                  "workflow": "exec", "level": "medium", "policy": {"note": "SECRET-MARKER"}}
+        log = self.root / "state" / "gsd-cli" / "launches.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        env, stdout = self.json_sessions("--json")
+        self.assertEqual((env.data.sessions[0].launch.workflow, env.data.sessions[0].launch.level),
+                         ("exec", "medium"))
+        self.assertNotIn("SECRET-MARKER", stdout)
+
+    def test_json_pick_lists_older_without_prompting(self):
+        claude_session(self.home, self.project, "c0", self.day(0), "claude-opus-5-5", "medium",
+                       agents=[self.agent("a0", requested="sonnet", model="claude-opus-5-5")])
+        for n in (1, 3, 4):
+            claude_session(self.home, self.project, f"c{n}", self.day(n), "claude-opus-5-5", "medium")
+        codex_session(self.home, self.project, "x2", self.day(2), "gpt-6-astra", "high")
+        # A reviewer without a host session is marked while the logs are read.
+        codex_session(self.home, self.project, "r0", self.day(0) + timedelta(hours=12), "gpt-6-astra",
+                      "high", source="exec")
+        env, _ = self.json_sessions("--pick", "--json")
+        self.assertEqual(env.data.sessions, [])
+        self.assertEqual([run.run_id for run in env.data.older], ["c1", "r0", "c0"])
+        self.assertEqual(env.data.older[2].children, [])
+        # Listing entries keep marks set while reading but are not checked:
+        # c0's agent asked sonnet and ran opus, yet no '!' mark appears.
+        self.assertEqual([(run.marks, run.mismatch) for run in env.data.older],
+                         [([], False), (["reviewer, unattached"], False), ([], False)])
+        listing = self.sessions("--pick")
+        self.assertIn("reviewer, unattached", listing.stdout)
+
+    def test_json_pick_number_selects_listing_entry(self):
+        self.populate()
+        listing, _ = self.json_sessions("--pick", "--json")
+        env, _ = self.json_sessions("--json", "--pick", "--json", "2")
+        self.assertEqual([run.run_id for run in env.data.sessions], [listing.data.older[1].run_id])
+        self.assertEqual(env.data.older, [])
+
+    def test_json_pick_out_of_range_is_usage_error(self):
+        self.populate()
+        env, _ = self.json_sessions("--pick", "9", "--json", code=1)
+        self.assertFalse(env.ok)
+        self.assertIsNone(env.data)
+        self.assertEqual((env.error.kind, env.error.message), ("usage", "Error: no session 9"))
+
+    def test_json_bad_argument_is_usage_error(self):
+        for args in (("bogus", "--json"), ("claude", "codex", "--json"), ("--json", "--pick", "x")):
+            env, _ = self.json_sessions(*args, code=1)
+            self.assertEqual((env.command, env.ok, env.error.kind),
+                             ("sessions", False, "usage"), args)
+            self.assertEqual(env.error.message, "Usage: gsd-cli sessions [claude|codex] [--pick [N]]")
+
+    def test_json_no_sessions_is_success(self):
+        for args in (("--json",), ("--pick", "--json"), ("--pick", "9", "--json")):
+            env, _ = self.json_sessions(*args)
+            self.assertTrue(env.ok, args)
+            self.assertEqual((env.data.sessions, env.data.older), ([], []), args)
+
+    def test_json_old_launch_record_and_no_node(self):
+        install_resolver(self.home, self.bin, {})
+        (self.bin / "node").unlink()
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium",
+                       agents=[self.agent("a1")])
+        record = {"time": (START - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "project": str(self.project), "runtime": "claude", "profile": "exec-opus",
+                  "session_model": "claude-opus-5-5", "session_effort": None,
+                  "forwarded_args": "oops", "config": {}}
+        log = self.root / "state" / "gsd-cli" / "launches.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        env, _ = self.json_sessions("--json", env={**self.env, "PATH": str(self.bin)})
+        self.assertTrue(env.ok)
+        launch = env.data.sessions[0].launch
+        self.assertEqual((launch.profile, launch.workflow, launch.level, launch.session_effort,
+                          launch.forwarded_args), ("exec-opus", None, None, None, []))
+        self.assertFalse(env.data.resolver_available)
+
+    def test_json_unrepresentable_log_value_is_config_envelope(self):
+        # Third-party session logs can hold values the output models do not
+        # allow; JSON mode reports that as an envelope, never a traceback.
+        claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", [7])
+        self.assertEqual(self.sessions().returncode, 0)
+        env, _ = self.json_sessions("--json", code=1)
+        self.assertEqual((env.command, env.ok, env.data, env.error.kind), ("sessions", False, None, "config"))
+        self.assertIn("effort", env.error.message)
+
+    def test_json_filters_by_runtime(self):
+        self.populate()
+        env, _ = self.json_sessions("codex", "--json")
+        self.assertEqual([(run.runtime, run.run_id) for run in env.data.sessions], [("codex", "x2")])
+        env, _ = self.json_sessions("--json", "claude")
+        self.assertEqual({run.runtime for run in env.data.sessions}, {"claude"})
+
+    def test_text_errors_unchanged(self):
+        self.populate()
+        for args, message in ((("bogus",), "Usage: gsd-cli sessions [claude|codex] [--pick [N]]\n"),
+                              (("claude", "codex"), "Usage: gsd-cli sessions [claude|codex] [--pick [N]]\n"),
+                              (("--pick", "9"), "Error: no session 9\n")):
+            result = self.sessions(*args)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", message), args)
+
+    def test_json_sessions_writes_nothing(self):
+        install_resolver(self.home, self.bin, {"claude:gsd-executor": {"model": "opus", "effort": "high"}})
+        self.populate()
+        launch_record(self.root / "state", self.project, "claude", "exec-opus",
+                      self.day(4) - timedelta(seconds=5), "claude-opus-5-5", None)
+        bases = (self.home, self.root / "state", self.project)
+        watched = [p for base in bases for p in base.rglob("*") if p.is_file()]
+        before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in watched}
+        names = {p for base in bases for p in base.rglob("*")}
+        for args in (("--json",), ("--pick", "--json"), ("--pick", "1", "--json"), ("--pick", "9", "--json")):
+            subprocess.run([sys.executable, str(LAUNCHER), "sessions", *args], cwd=self.project,
+                           env=self.env, capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL)
+        after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in watched}
+        self.assertEqual(before, after)
+        self.assertEqual(names, {p for base in bases for p in base.rglob("*")})
 
 
 class LaunchLogTests(SessionsTestCase):

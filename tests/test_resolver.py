@@ -58,6 +58,21 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(result['context']['source'], 'workstream')
         self.assertEqual(self.snapshot(), before)
 
+    def test_run_bridge_returns_rows_for_requested_agents(self):
+        self.assertIsNotNone(importlib.util.find_spec('gsd_cli.resolver'), 'resolver adapter is not implemented')
+        from gsd_cli.resolver import query_environment, run_bridge
+        before = self.snapshot()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            payload, stderr = run_bridge(self.core, 'codex', {'.planning/config.json': self.data},
+                                         ['gsd-planner'], query_environment(self.project, 'codex'))
+        rows = {row['agent']: row['result'] for row in payload['rows']}
+        self.assertEqual(set(rows), {'gsd-planner', 'custom-agent'})
+        self.assertEqual(rows['gsd-planner']['model'], 'codex-model')
+        self.assertEqual(rows['custom-agent']['model'], 'custom-model')
+        self.assertEqual(payload['context']['config']['runtime'], 'codex')
+        self.assertEqual(stderr, [])
+        self.assertEqual(self.snapshot(), before)
+
     def test_missing_node_old_install_and_malformed_catalog_are_incomplete(self):
         self.assertIsNotNone(importlib.util.find_spec('gsd_cli.resolver'), 'resolver adapter is not implemented')
         with mock.patch('gsd_cli.resolver.shutil.which', return_value=None):

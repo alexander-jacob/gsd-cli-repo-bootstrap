@@ -11,6 +11,7 @@ gsd-cli status
 gsd-cli plan codex high --config
 gsd-cli plan codex high --config --details
 gsd-cli sessions codex
+gsd-cli policy
 ```
 
 | Command | What it tells you | Behavior |
@@ -22,8 +23,21 @@ gsd-cli sessions codex
 | `sessions [claude\|codex]` | Session, agent and reviewer information recovered from logs | Read-only; historical evidence may be incomplete |
 | `sessions codex --pick` | Interactive session selection | Read-only |
 | `sessions codex --pick 1` | Select a numbered session | Read-only |
+| `policy` | Validates `gsd-cli.config.json` and prints one line naming it | Read-only; `policy --json` adds the full policy and its differences from the shipped starter |
+| `check --json` | The `check` results as JSON, with a machine-readable `reason` per entry | Read-only; same exit code as text mode |
+| `WORKFLOW RUNTIME [LEVEL] --config --json` | The complete preview, including per-agent findings with codes | Requires `--config`; exclusive with `--details`; read-only |
+| `sessions [claude\|codex] --json` | Sessions, agents and reviewers as JSON | Read-only; add `--pick [N]` for older sessions |
 
 These inspection commands do not capture edits or recover interrupted writes.
+
+`sessions` compares each run with what the installed GSD would resolve through the
+same non-mutating resolver bridge as `--config`. It no longer runs `gsd-tools.cjs`,
+so it cannot build or repair an installation, and it honours project-local and
+overridden installations. Without Node or a usable `bin/lib/commands.cjs`, the
+comparison is skipped and runs are listed without marks.
+
+Every JSON form prints one document and never writes. Fields, error kinds and
+finding codes are described in [machine-readable output](json-output.md).
 
 ## Read a configuration preview
 

@@ -9,6 +9,7 @@ LEVELS = ('low', 'medium', 'high')
 RUNTIMES = ('claude', 'codex')
 PHASES = ('planning', 'discuss', 'research', 'execution', 'verification')
 TIERS = dict(zip(LEVELS, ('haiku', 'sonnet', 'opus')))
+RESERVED = ('init', 'status', 'sessions', 'check', 'policy', 'schema', 'help', 'claude', 'codex')
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
 TRANSIENT = (('workflow', '_auto_chain_active'),)
 
@@ -43,7 +44,7 @@ def string(value, path):
 
 def validate(p: dict) -> None:
     if isinstance(p, dict) and 'gsd' not in p:
-        raise PolicyError('gsd.min_version is required; add "gsd": {"min_version": "1.20.1"} '
+        raise PolicyError('gsd.min_version is required; add "gsd": {"min_version": "1.21.0"} '
                           'to gsd-cli.config.json, choosing the minimum your project requires')
     obj(p, 'policy', ('gsd', 'schema_version', 'runtimes', 'phase_defaults', 'agent_levels',
                      'agent_efforts', 'reviewers', 'reviewer_efforts', 'reviewer_groups', 'workflows', 'gsd_defaults'))
@@ -83,7 +84,7 @@ def validate(p: dict) -> None:
         if len(group) != len(set(group)):
             raise PolicyError(f'reviewer_groups.{name}: duplicate reviewers')
     for name, w in obj(p['workflows'], 'workflows').items():
-        if not re.fullmatch(r'[a-z][a-z0-9-]*', name) or name in ('init', 'status', 'sessions', 'check', 'help', 'claude', 'codex'):
+        if not re.fullmatch(r'[a-z][a-z0-9-]*', name) or name in RESERVED:
             raise PolicyError(f'workflows.{name}: reserved or invalid workflow name')
         obj(w, f'workflows.{name}', ('tasks', 'task_levels', 'reviewer_groups', 'parallel_reviews', 'permissions'), ('session_efforts',))
         if not isinstance(w['tasks'], list):

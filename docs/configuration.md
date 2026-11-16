@@ -23,7 +23,7 @@ that policy, not complete replacement files.
 | Field | Meaning |
 |---|---|
 | `schema_version` | Must be `1` |
-| `gsd.min_version` | Explicit minimum GSD SemVer; starter value `1.20.1` |
+| `gsd.min_version` | Explicit minimum GSD SemVer; starter value `1.21.0` |
 | `runtimes` | Both runtimes and all three levels, each with session model, agent model and session effort |
 | `phase_defaults` | Levels for planning, discuss, research, execution and verification |
 | `agent_levels` | Named agent pins expressed as runtime-independent levels |

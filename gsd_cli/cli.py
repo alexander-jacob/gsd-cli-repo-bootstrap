@@ -1,13 +1,18 @@
 """Click front end; policy and synchronization remain independent of Click."""
+import json
 import os
 import shutil
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
+import pydantic
 
 from . import config, preview, resolver, sessions
-from .policy import LEVELS, RUNTIMES, PolicyError, resolve, validate
+from .models import (JSON_COMMANDS, SCHEMAS, CheckData, CheckEntry, CheckEnvelope, ErrorInfo, PolicyData, PolicyEnvelope,
+                     PreviewEnvelope, SessionsEnvelope, StatusData, StatusEnvelope, dump, failure)
+from .policy import LEVELS, RESERVED, RUNTIMES, PolicyError, load_default, resolve, validate
 from .versions import VersionError, check_installation, format_result
 
 
@@ -42,7 +47,7 @@ class WorkflowGroup(click.Group):
 def cli():
     """Open Claude/Codex with project-owned workflow presets.
 
-    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [--config [--details]] [-- CLI_ARGS...]
+    Usage: gsd-cli WORKFLOW RUNTIME [low|medium|high] [--secure] [--config [--details|--json]] [-- CLI_ARGS...]
     Level defaults to medium. Put all child CLI arguments after --.
     Presets open the runtime; they never invoke a GSD workflow.
     """
@@ -60,36 +65,79 @@ def init_command():
 
 
 @cli.command('status')
-def status_command():
+@click.option('--json', 'as_json', is_flag=True, help='Print one machine-readable JSON envelope.')
+def status_command(as_json):
     """Read effective configuration, or defaults in a fresh checkout."""
     root = config.discover()
     path = root / config.WORKING
     if not path.exists():
         path = root / config.DEFAULT
     data = config.read_json(path)
-    click.echo(config.serialize({'source': str(path), 'pending_recovery': (root / config.JOURNAL).exists(),
-                                 'config': data}), nl=False)
+    pending = (root / config.JOURNAL).exists()
+    if as_json:
+        emit(StatusEnvelope(ok=True, data=StatusData(project=str(root.resolve()), source=str(path),
+                                                      pending_recovery=pending, config=data)))
+    click.echo(config.serialize({'source': str(path), 'pending_recovery': pending, 'config': data}), nl=False)
 
 
 @cli.command('check')
 @click.argument('runtime', type=click.Choice(RUNTIMES), required=False)
-def check_command(runtime):
+@click.option('--json', 'as_json', is_flag=True, help='Print one machine-readable JSON envelope.')
+def check_command(runtime, as_json):
     """Check installed GSD against project requirements (both runtimes by default)."""
     root = config.discover()
     policy = project_policy(root)
-    results = [check_installation(root, rt, policy['gsd']['min_version'])
-               for rt in ((runtime,) if runtime else RUNTIMES)]
+    minimum = policy['gsd']['min_version']
+    results = [check_installation(root, rt, minimum) for rt in ((runtime,) if runtime else RUNTIMES)]
+    failed = any(not result.ok for result in results)
+    message = 'GSD requirements not met. Update or repair the reported installation, then rerun gsd-cli check.'
+    if as_json:
+        data = CheckData(minimum=minimum, results=[
+            CheckEntry(runtime=r.runtime, directory=str(r.directory), installed=r.installed, minimum=r.minimum,
+                       ok=r.ok, reason=r.reason, message=r.message) for r in results])
+        emit(CheckEnvelope(ok=not failed, data=data,
+                           error=ErrorInfo(kind='requirements', message=message) if failed else None))
     for result in results:
         click.echo(format_result(result))
-    if any(not result.ok for result in results):
-        raise click.ClickException('GSD requirements not met. Update or repair the reported installation, then rerun gsd-cli check.')
+    if failed:
+        raise click.ClickException(message)
+
+
+@cli.command('policy')
+@click.option('--json', 'as_json', is_flag=True, help='Print one machine-readable JSON envelope.')
+def policy_command(as_json):
+    """Validate project policy and show it."""
+    root = config.discover()
+    policy = project_policy(root)
+    path = root / config.POLICY
+    if as_json:
+        emit(PolicyEnvelope(ok=True, data=PolicyData(
+            project=str(root.resolve()), path=str(path), policy=policy,
+            differs_from_shipped=config.changed_paths(load_default(), policy))))
+    click.echo(f'Policy valid: {path}')
+
+
+@cli.command('schema')
+@click.argument('name', metavar='NAME', required=False)
+def schema_command(name):
+    """Print the JSON Schema of a machine-readable output."""
+    if name is None:
+        click.echo('\n'.join(sorted(SCHEMAS)))
+    elif name in SCHEMAS:
+        click.echo(json.dumps(SCHEMAS[name].model_json_schema(), indent=2, ensure_ascii=True))
+    else:
+        raise click.UsageError(f'unknown schema {name!r}; choose from {", ".join(sorted(SCHEMAS))}')
 
 
 @cli.command('sessions', context_settings={'ignore_unknown_options': True, 'allow_extra_args': True})
 @click.argument('args', nargs=-1, type=click.UNPROCESSED)
 def sessions_command(args):
-    """Read recent sessions: [claude|codex] [--pick [N]]."""
-    sessions.sessions_command(config.discover(), list(args))
+    """Read recent sessions: [claude|codex] [--pick [N]] [--json]."""
+    root = config.discover()
+    runtimes, picking, pick, as_json = sessions.parse_args(list(args))
+    if as_json:
+        emit(SessionsEnvelope(ok=True, data=sessions.report(root, runtimes, picking, pick)))
+    sessions.sessions_command(root, list(args))
 
 
 def guard_billing(runtime: str, policy: dict, reviewers: list[str]) -> None:
@@ -128,10 +176,15 @@ def workflow_command(name: str):
     @click.option('--secure', is_flag=True, help='Suppress the preset permission-bypass flag.')
     @click.option('--config', 'show_config', is_flag=True, help='Print effective config and installed GSD model/effort checks, then exit without launching.')
     @click.option('--details', is_flag=True, help='With --config, show resolver evidence and full effective JSON.')
+    @click.option('--json', 'as_json', is_flag=True, help='With --config, print one machine-readable JSON envelope.')
     @click.pass_context
-    def launch(ctx, runtime, level, secure, show_config, details):
+    def launch(ctx, runtime, level, secure, show_config, details, as_json):
         if details and not show_config:
             raise click.UsageError('--details requires --config')
+        if as_json and not show_config:
+            raise click.UsageError('--json requires --config')
+        if as_json and details:
+            raise click.UsageError('--json and --details are mutually exclusive; JSON is always complete')
         forwarded = ctx.obj.get('forwarded', [])
         guard_project_location(runtime, forwarded)
         root = config.discover()
@@ -141,6 +194,12 @@ def workflow_command(name: str):
         if show_config:
             data, captured = config.preview(root, policy, resolved)
             inspection = resolver.inspect(root, data, runtime, policy['gsd']['min_version'])
+            if as_json:
+                complete = inspection['complete']
+                emit(PreviewEnvelope(ok=complete, data=preview.report(
+                    root, name, runtime, level, policy, resolved, data, captured, argv, forwarded, inspection),
+                    error=None if complete else ErrorInfo(
+                        kind='incomplete', message='Configuration preview is incomplete; see diagnostics.')))
             color = preview.use_color(click.get_text_stream('stdout'), os.environ)
             if details:
                 report = preview.render(root, name, runtime, level, policy, resolved, data,
@@ -178,6 +237,28 @@ def workflow_command(name: str):
     return launch
 
 
+def emit(envelope) -> NoReturn:
+    """Print one JSON envelope and exit 0 only when it reports success."""
+    sys.stdout.write(dump(envelope))
+    sys.stdout.flush()
+    raise SystemExit(0 if envelope.ok else 1)
+
+
+def json_command(args: list[str]) -> str | None:
+    """Envelope command name for an invocation: a JSON command, None, or 'preview'."""
+    if not args or args[0].startswith('-'):
+        return None
+    if args[0] in JSON_COMMANDS:
+        return args[0]
+    return None if args[0] in RESERVED else 'preview'
+
+
+def fail_json(args: list[str], kind: str, message: str, code: int) -> NoReturn:
+    sys.stdout.write(dump(failure(json_command(args), kind, message)))
+    sys.stdout.flush()
+    raise SystemExit(code)
+
+
 def main():
     args = sys.argv[1:]
     if args == ['help']:
@@ -186,14 +267,35 @@ def main():
     if '--' in args:
         split = args.index('--')
         args, forwarded = args[:split], args[split + 1:]
-        if not args or args[0] in ('init', 'status', 'sessions', 'check', 'help'):
+        if not args or (args[0] in RESERVED and args[0] not in RUNTIMES):
             click.echo('Error: forwarding after -- is supported only for workflow launches', err=True)
             raise SystemExit(2)
+    json_mode = '--json' in args
+    if json_mode and any(a in ('-h', '--help') for a in args):
+        args, json_mode = [a for a in args if a != '--json'], False  # Help wins over JSON.
     try:
-        cli.main(args=args, prog_name='gsd-cli', obj={'forwarded': forwarded}, standalone_mode=False)
+        cli.main(args=args, prog_name='gsd-cli', obj={'forwarded': forwarded, 'json': json_mode}, standalone_mode=False)
+    except sessions.SessionsError as exc:
+        if json_mode:
+            fail_json(args, 'usage', str(exc), 1)
+        click.echo(str(exc), err=True)
+        raise SystemExit(1) from exc
     except click.ClickException as exc:
+        if json_mode:
+            usage = isinstance(exc, click.UsageError)
+            fail_json(args, 'usage' if usage else 'config', exc.format_message(), exc.exit_code)
         exc.show()
         raise SystemExit(exc.exit_code) from exc
+    except pydantic.ValidationError as exc:
+        if not json_mode:
+            raise
+        # Values from unowned config or third-party logs that the output models cannot represent.
+        problems = '; '.join(f"{'.'.join(map(str, e['loc'])) or 'value'}: {e['msg']}" for e in exc.errors())
+        fail_json(args, 'config', f'Cannot represent the result as JSON: {problems}', 1)
     except (config.ConfigError, PolicyError, VersionError, OSError) as exc:
+        if json_mode:
+            kind = ('config' if isinstance(exc, config.ConfigError) else 'policy' if isinstance(exc, PolicyError)
+                    else 'version' if isinstance(exc, VersionError) else 'os')
+            fail_json(args, kind, str(exc), 1)
         click.echo(f'Error: {exc}', err=True)
         raise SystemExit(1) from exc

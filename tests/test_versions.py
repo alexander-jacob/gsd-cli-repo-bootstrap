@@ -8,7 +8,7 @@ from unittest import mock
 from gsd_cli.versions import VersionError, check_installation, format_result, parse_version
 
 
-def install_gsd(config_dir, version='1.20.1'):
+def install_gsd(config_dir, version='1.21.0'):
     bundle = config_dir / 'gsd-core'
     (bundle / 'workflows').mkdir(parents=True, exist_ok=True)
     (bundle / 'bin').mkdir(exist_ok=True)
@@ -63,6 +63,7 @@ class InstallationTests(unittest.TestCase):
                 result = self.check()
                 self.assertEqual(result.ok, ok)
                 self.assertEqual(result.installed, version)
+                self.assertEqual(result.reason, 'ok' if ok else 'below_minimum')
                 report = format_result(result)
                 for item in ('codex', version, '1.20.1', str(bundle), 'PASS' if ok else 'FAIL'):
                     self.assertIn(item, report)
@@ -73,6 +74,7 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.directory, self.home / '.codex/gsd-core')
         self.assertIsNone(result.installed)
+        self.assertEqual(result.reason, 'unverifiable')
 
     def test_local_installation_over_global_even_when_old(self):
         install_gsd(self.home / '.codex', '9.0.0')

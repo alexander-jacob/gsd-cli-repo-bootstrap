@@ -6,11 +6,13 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from . import models, versions
+from .resolver import query_environment, run_bridge, validate_result
 
 # Historical compatibility only; never used to resolve a new launch.
 REVIEWERS = {
@@ -353,45 +355,61 @@ def model_matches(runtime: str, expected: str, actual: str | None) -> bool:
 
 
 class Resolver:
-    """Per-agent expected model and effort from the real GSD resolver, evaluated
-    against a launch's config snapshot in a throwaway project directory."""
+    """Per-agent expected model and effort from the selected GSD installation's
+    resolver modules, evaluated against a launch's config snapshot through the
+    non-mutating preview bridge (never the installed gsd-tools.cjs)."""
 
-    def __init__(self) -> None:
-        self.tools = Path.home() / ".claude" / "gsd-core" / "bin" / "gsd-tools.cjs"
-        self.available = True
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.checked: set[str] = set()  # runtimes whose installation was looked at
+        self.unavailable: set[str] = set()  # of those, the ones without a usable installation
         self.cache: dict[tuple, dict | None] = {}
+
+    @property
+    def available(self) -> bool:
+        """False only when no checked runtime had a usable installation."""
+        return not self.checked or bool(self.checked - self.unavailable)
+
+    def mark_unavailable(self, runtime: str) -> None:
+        self.checked.add(runtime)
+        self.unavailable.add(runtime)
+
+    def installation(self, runtime: str) -> Path | None:
+        """The selected installation when Node and its resolver modules exist."""
+        installation = versions.installation_dir(self.root, runtime, os.environ, Path.home())
+        if shutil.which("node") is None or not (installation / "bin" / "lib" / "commands.cjs").is_file():
+            return None
+        return installation
 
     def expected(self, launch: dict, agent_type: str) -> dict | None:
         """{"model", "effort", ...} for agent_type; None when unknown or unavailable."""
         key = (launch.get("time"), launch.get("runtime"), agent_type)
         if key not in self.cache:
-            self.cache[key] = self.resolve(launch, agent_type) if self.available else None
+            usable = launch.get("runtime") not in self.unavailable
+            self.cache[key] = self.resolve(launch, agent_type) if usable else None
         return self.cache[key]
 
     def resolve(self, launch: dict, agent_type: str) -> dict | None:
-        node = shutil.which("node")
-        config = launch.get("config")
-        if node is None or not self.tools.is_file():
-            self.available = False
+        snapshot, runtime = launch.get("config"), launch.get("runtime")
+        if not isinstance(snapshot, dict) or runtime not in versions.CONFIG_ENV:
             return None
-        if not isinstance(config, dict) or not isinstance(launch.get("runtime"), str):
+        installation = self.installation(runtime)
+        if installation is None:
+            self.mark_unavailable(runtime)
             return None
-        with tempfile.TemporaryDirectory() as temp:
-            (Path(temp) / ".planning").mkdir()
-            (Path(temp) / ".planning" / "config.json").write_text(json.dumps(config), encoding="utf-8")
-            try:
-                result = subprocess.run(
-                    [node, str(self.tools), "query", "resolve-model", agent_type],
-                    cwd=temp, env={**os.environ, "GSD_RUNTIME": launch["runtime"]},
-                    capture_output=True, text=True, timeout=10, check=False,
-                )
-                answer = json.loads(result.stdout) if result.returncode == 0 else None
-            except (OSError, subprocess.SubprocessError, ValueError):
-                answer = None
-        if not isinstance(answer, dict):
-            self.available = False
+        self.checked.add(runtime)
+        try:
+            payload, _ = run_bridge(installation, runtime, {".planning/config.json": snapshot},
+                                    [agent_type], query_environment(self.root, runtime))
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+            self.mark_unavailable(runtime)
             return None
-        return None if answer.get("unknown_agent") else answer
+        row = next((row for row in payload["rows"]
+                    if isinstance(row, dict) and row.get("agent") == agent_type), None)
+        answer = row.get("result") if row else None
+        if not validate_result(answer) or answer.get("unknown_agent"):
+            return None
+        return answer
 
 
 def expected_value(entry: dict | None, key: str) -> str | None:
@@ -482,27 +500,115 @@ SESSIONS_USAGE = "Usage: gsd-cli sessions [claude|codex] [--pick [N]]"
 RECENT_SESSIONS = 3
 
 
-def sessions_command(root: Path, args: list[str]) -> None:
-    """Show the newest sessions of a project; --pick browses older ones."""
+class SessionsError(ValueError):
+    """A sessions argument error; str(exc) is the complete message for stderr."""
+
+
+def parse_args(args: list[str]) -> tuple[list[str], bool, str | None, bool]:
+    """(runtimes, picking, pick, as_json) from the raw sessions arguments."""
     runtimes: list[str] = []
     pick: str | None = None
-    picking = False
-    items = iter(args)
-    for arg in items:
-        if arg in ("claude", "codex") and arg not in runtimes:
+    picking = as_json = False
+    for arg in args:
+        if arg == "--json":
+            as_json = True
+        elif arg in ("claude", "codex") and arg not in runtimes:
             runtimes.append(arg)
         elif arg == "--pick" and not picking:
             picking = True
         elif picking and pick is None and arg.isdigit():
             pick = arg
         else:
-            sys.exit(SESSIONS_USAGE)
+            raise SessionsError(SESSIONS_USAGE)
     if len(runtimes) > 1:
-        sys.exit(SESSIONS_USAGE)
+        raise SessionsError(SESSIONS_USAGE)
+    return runtimes, picking, pick, as_json
+
+
+def top_runs(root: Path, runtimes: list[str]) -> list[Run]:
+    """Linked top-level runs of the selected runtimes (all when empty), newest first."""
     readers = {"claude": read_claude_runs, "codex": read_codex_runs}
     runs = [run for name in (runtimes or list(readers)) for run in readers[name](root)]
-    top = link(runs, [launch for launch in load_launches(root)
-                      if not runtimes or launch["runtime"] in runtimes])
+    return link(runs, [launch for launch in load_launches(root)
+                       if not runtimes or launch["runtime"] in runtimes])
+
+
+def picked(older: list[Run], pick: str) -> Run:
+    if not pick.isdigit() or not 1 <= int(pick) <= len(older):
+        raise SessionsError(f"Error: no session {pick}")
+    return older[int(pick) - 1]
+
+
+def probed_resolver(root: Path, runtimes: set[str]) -> Resolver:
+    """A resolver that knows which of runtimes have a usable installation; it is
+    unavailable when none of them has."""
+    resolver = Resolver(root)
+    for runtime in runtimes:
+        if resolver.installation(runtime) is None:
+            resolver.mark_unavailable(runtime)
+        else:
+            resolver.checked.add(runtime)
+    return resolver
+
+
+def load_and_check(root: Path, shown: list[Run]) -> Resolver:
+    """Load subagents of the shown runs and mark them; returns the resolver used."""
+    resolver = probed_resolver(root, {run.runtime for run in shown})
+    for run in shown:
+        load_claude_agents(run)
+        check(run, resolver, run.runtime, run.launch)
+    return resolver
+
+
+def utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def launch_summary(launch: dict) -> models.LaunchSummary:
+    """The launch record's scalar fields; never its embedded configs."""
+    def text(key):
+        value = launch.get(key)
+        return value if isinstance(value, str) else None
+    return models.LaunchSummary(time=text("time"), profile=text("profile"), workflow=text("workflow"),
+                                level=text("level"), session_model=text("session_model"),
+                                session_effort=text("session_effort"), forwarded_args=launch_args(launch))
+
+
+def run_model(run: Run, listing: bool = False) -> models.RunModel:
+    """A run and its descendants; a listing entry is unchecked (it keeps only the
+    marks set while reading logs, as the text listing shows) and has no children."""
+    marks = list(run.marks)
+    return models.RunModel(
+        runtime=run.runtime, run_id=run.run_id, kind=run.kind, cwd=run.cwd,
+        start=utc(run.start), end=utc(run.end), model=run.model, effort=run.effort,
+        effort_varied=run.effort_varied, advisor=run.advisor, agent_type=run.agent_type,
+        requested_model=run.requested_model, requested_effort=run.requested_effort,
+        resumed=run.resumed, cleared=run.cleared, marks=marks,
+        mismatch=any(mark.startswith("!") for mark in marks),
+        launch=launch_summary(run.launch) if run.launch else None,
+        children=[] if listing else [run_model(child) for child in run.children])
+
+
+def report(root: Path, runtimes: list[str], picking: bool, pick: str | None) -> models.SessionsData:
+    """What the text command shows, as data; a pick without a number lists the
+    older sessions instead of prompting."""
+    top = top_runs(root, runtimes)
+    recent, older = top[:RECENT_SESSIONS], top[RECENT_SESSIONS:]
+    if not top or (picking and pick is None):
+        listing = older if top else []
+        resolver = probed_resolver(root, {run.runtime for run in listing} or set(runtimes or ("claude", "codex")))
+        return models.SessionsData(project=str(root), resolver_available=resolver.available,
+                                   sessions=[], older=[run_model(run, listing=True) for run in listing])
+    shown = [picked(older, pick)] if picking else recent
+    resolver = load_and_check(root, shown)
+    return models.SessionsData(project=str(root), resolver_available=resolver.available,
+                               sessions=[run_model(run) for run in shown], older=[])
+
+
+def sessions_command(root: Path, args: list[str]) -> None:
+    """Show the newest sessions of a project; --pick browses older ones."""
+    runtimes, picking, pick, _ = parse_args(args)
+    top = top_runs(root, runtimes)
     if not top:
         print(f"No Claude or Codex sessions found for {root}.")
         return
@@ -521,17 +627,11 @@ def sessions_command(root: Path, args: list[str]) -> None:
             except (EOFError, KeyboardInterrupt):
                 print()
                 return
-        if not pick.isdigit() or not 1 <= int(pick) <= len(older):
-            sys.exit(f"Error: no session {pick}")
-        shown = [older[int(pick) - 1]]
+        shown = [picked(older, pick)]
     else:
         shown = recent
-    resolver = Resolver()
-    if shutil.which("node") is None or not resolver.tools.is_file():
-        resolver.available = False
+    resolver = load_and_check(root, shown)
     for run in shown:
-        load_claude_agents(run)
-        check(run, resolver, run.runtime, run.launch)
         print("\n".join(render(run)))
     if not resolver.available:
         print("note: GSD resolver not available; profile comparison skipped")

@@ -12,7 +12,9 @@ from pathlib import Path
 LAUNCHER = Path(__file__).resolve().parents[1] / "gsd-cli"
 
 
-class GsdCliTestCase(unittest.TestCase):
+class GsdCliFixture(unittest.TestCase):
+    """Temporary project, stub CLIs and launcher helpers; defines no tests so subclasses run only their own."""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -90,6 +92,8 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
     def snapshot(self):
         return {str(p.relative_to(self.project)): p.read_bytes() for p in self.project.rglob('*') if p.is_file() and p.name != '.gsd-cli.lock'}
 
+
+class GsdCliTestCase(GsdCliFixture):
     def test_init_seeds_complete_policy_without_changing_working(self):
         before = self.config_path.read_bytes()
         self.initialize()
@@ -261,7 +265,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         before = self.snapshot()
         result = self.run_launcher('check')
         self.assertEqual(result.returncode, 1, result.stderr)
-        for value in ('claude', 'codex', '1.20.1', '1.18.0', 'PASS', 'FAIL', str(self.home / '.codex/gsd-core')):
+        for value in ('claude', 'codex', '1.21.0', '1.18.0', 'PASS', 'FAIL', str(self.home / '.codex/gsd-core')):
             self.assertIn(value, result.stdout)
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(self.log.exists())
@@ -283,7 +287,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
             result = self.run_launcher('exec', 'codex', *extra)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('1.18.0', result.stderr)
-            self.assertIn('1.20.1', result.stderr)
+            self.assertIn('1.21.0', result.stderr)
             self.assertIn('gsd-cli check codex', result.stderr)
             self.assertEqual(self.snapshot(), before)
             self.assertFalse((self.project / '.planning/.gsd-cli.lock').exists())
@@ -305,7 +309,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
         self.initialize()
         version = self.home / '.codex/gsd-core/VERSION'
         before = self.snapshot()
-        for content in (None, 'invalid', '1.20.1-rc.1'):
+        for content in (None, 'invalid', '1.21.0-rc.1'):
             if content is None:
                 version.unlink()
             else:
@@ -314,7 +318,7 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(self.snapshot(), before)
             self.assertFalse(self.log.exists())
-        version.write_text('1.20.1')
+        version.write_text('1.21.0')
         (self.home / '.codex/gsd-core/bin/gsd-tools.cjs').unlink()
         self.assertEqual(self.run_launcher('exec', 'codex').returncode, 1)
         self.assertEqual(self.snapshot(), before)

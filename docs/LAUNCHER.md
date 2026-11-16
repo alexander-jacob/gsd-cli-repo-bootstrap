@@ -2,7 +2,7 @@
 
 ## Installation
 
-Use Python 3.10 or newer on Linux/macOS. The package uses Click and POSIX file locking. Install pipx using its [official instructions](https://pipx.pypa.io/stable/installation/), then:
+Use Python 3.10 or newer on Linux/macOS. The package uses Click, Pydantic and POSIX file locking. Install pipx using its [official instructions](https://pipx.pypa.io/stable/installation/), then:
 
 ```sh
 pipx install /absolute/path/to/gsd-cli-repo-bootstrap
@@ -12,16 +12,18 @@ gsd-cli --help
 
 If `~/.local/bin/gsd-cli` is the old copied Python script, inspect it first (`ls -l` and its opening lines). After identifying it as this repository's legacy launcher, move that file to a backup location you choose, then install the package. Do not use pipx `--force` to overwrite an unidentified executable. `task install` runs `pipx install` from this checkout.
 
-To update a local installation, use `pipx install --force /absolute/path/to/gsd-cli-repo-bootstrap` **after confirming that pipx owns the existing command** (`pipx list`). Package upgrades do not overwrite project policy. The development wrapper `./gsd-cli` requires the package source and Click; it is not a single-file distribution.
+To update a local installation, use `pipx install --force /absolute/path/to/gsd-cli-repo-bootstrap` **after confirming that pipx owns the existing command** (`pipx list`). Package upgrades do not overwrite project policy. The development wrapper `./gsd-cli` requires the package source, Click and Pydantic; it is not a single-file distribution.
 
 ## Commands and forwarding
 
 ```text
 gsd-cli init
-gsd-cli status
-gsd-cli check [claude|codex]
-gsd-cli sessions [claude|codex] [--pick [N]]
-gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [--config [--details]] [-- CHILD_ARGS...]
+gsd-cli status [--json]
+gsd-cli check [claude|codex] [--json]
+gsd-cli policy [--json]
+gsd-cli schema [NAME]
+gsd-cli sessions [claude|codex] [--pick [N]] [--json]
+gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [--config [--details|--json]] [-- CHILD_ARGS...]
 ```
 
 Workflow and runtime are mandatory; level defaults to medium. Old runtime-first syntax is rejected with a replacement example. No preset runs a GSD command. Start the desired GSD skill yourself after the CLI opens.
@@ -65,7 +67,7 @@ The complete project policy must include:
 
 ```json
 "gsd": {
-  "min_version": "1.20.1"
+  "min_version": "1.21.0"
 }
 ```
 
@@ -111,7 +113,7 @@ The complete example is [examples/gsd-config-example.json](https://github.com/al
 | Field | Contract |
 |---|---|
 | `schema_version` | `1` |
-| `gsd.min_version` | Required complete SemVer minimum; default `1.20.1`; blocks unsupported launches |
+| `gsd.min_version` | Required complete SemVer minimum; default `1.21.0`; blocks unsupported launches |
 | `runtimes` | Both runtimes; all three levels; `session_model`, `agent_model`, `session_effort` required |
 | `phase_defaults` | Explicit levels for planning, discuss, research, execution and verification |
 | `agent_levels` | Per-agent level pins; translated for the selected runtime |

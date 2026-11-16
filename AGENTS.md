@@ -6,13 +6,14 @@
 - `gsd_cli/policy.py` validates complete project policy and resolves model/effort/permission/reviewer choices. `gsd_cli/data/default-config.json` is the authoritative shipped seed, loaded via package resources.
 - `gsd_cli/versions.py` performs offline SemVer and runtime-specific GSD bundle checks; selected-install failures block before config synchronization.
 - `gsd_cli/config.py` owns discovery, migration, three-way capture, ownership metadata, file locking and journal recovery.
-- `gsd_cli/sessions.py` reads session logs and retains historical compatibility mappings only for old records.
+- `gsd_cli/sessions.py` reads session logs, resolves expectations through the non-mutating preview bridge, and retains historical compatibility mappings only for old records.
+- `gsd_cli/models.py` defines the machine-readable envelopes, payloads and `FindingCode`; `gsd_cli/policy_model.py` models `gsd-cli.config.json` for its schema only. `gsd-cli schema NAME` prints schemas generated from them.
 - Tests use unittest, temporary projects, real temporary Git indexes and fabricated CLI/session logs. CI covers Python 3.10 and 3.11.
 - `examples/gsd-config-example.json` mirrors the complete starter policy. It is not an effective GSD config fragment.
 
 ## Build, Test, and Development Commands
 
-Use Python 3.10+ on POSIX, with Click installed in a virtual environment. Install with `pipx install .`; develop with `python -m pip install -e .` in a venv.
+Use Python 3.10+ on POSIX, with Click and Pydantic installed in a virtual environment. Install with `pipx install .`; develop with `python -m pip install -e .` in a venv.
 
 - `python -m gsd_cli --help`: read-only help, including outside a project.
 - `python -m unittest discover -s tests -v`: full offline suite.
@@ -20,6 +21,8 @@ Use Python 3.10+ on POSIX, with Click installed in a virtual environment. Instal
 - `gsd-cli check [claude|codex]`: read-only version diagnostics; check both when omitted, exit nonzero on any failure.
 - `gsd-cli init`: migrate/seed complete policy and tracked defaults, preserving working config.
 - `gsd-cli status` and `gsd-cli sessions [claude|codex] [--pick [N]]`: strictly read-only; no capture, recovery or log writes.
+- `gsd-cli policy [--json]`: validate the project policy; `--json` prints it. `gsd-cli schema [NAME]`: print JSON Schemas (`status`, `check`, `policy`, `preview`, `sessions`, `error`, `policy-file`). `policy` and `schema` are reserved workflow names.
+- `--json` (before the first `--`) on `status`, `check`, `policy`, `sessions` and `WORKFLOW RUNTIME --config` prints one envelope document; it is read-only, requires `--config` for workflows and is exclusive with `--details`.
 
 ## Model Routing Invariants
 
@@ -33,7 +36,7 @@ Use Python 3.10+ on POSIX, with Click installed in a virtual environment. Instal
 
 ## Coding and Testing Guidelines
 
-Use four-space Python indentation, descriptive snake_case names, two-space JSON and unittest. Keep Click at the CLI boundary; domain logic must be usable without a Click context. Avoid dependencies beyond Click and the standard library.
+Use four-space Python indentation, descriptive snake_case names, two-space JSON and unittest. Keep Click at the CLI boundary; domain logic must be usable without a Click context. Avoid dependencies beyond Click, Pydantic and the standard library. Pydantic defines machine-readable output and its schemas only.
 
 Test argument forwarding at the first `--`, both runtime/level combinations, custom workflows, permissions, billing by adapter, missing executable preflight, logs, historical session compatibility, default stability, recursive capture conflicts, stale ownership, Git migration and interrupted-write recovery. Tests must not use real credentials or paid model calls. Use actual temporary files for persistence checks.
 
