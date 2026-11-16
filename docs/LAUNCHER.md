@@ -97,7 +97,7 @@ On failure, update or repair the **reported installation** through GSD's update 
 
 ## Initialization and migration
 
-Run `gsd-cli init` inside an existing GSD project or a descendant. It does not create a GSD roadmap or requirements.
+Run `gsd-cli init` inside an existing GSD project or a descendant. A `.planning/` directory without any config file is enough, for example right after `gsd-map-codebase`; the nearest one wins, but a bare `.planning/` above the Git repository root or in your home directory is ignored. Init does not create `.planning/`, a GSD roadmap or requirements. Other commands still require `.planning/config.json` or `config.default.json`.
 
 Initialization seeds complete `gsd-cli.config.json` from the packaged `data/default-config.json`. When migrating, compatible existing Claude aliases/Codex tier models, known agent pins, effort overrides, reviewer definitions and parallel-review preference are retained. New session/workflow/reviewer choices come from the explicit starter policy; inspect the generated file. An unrepresentable custom agent model remains an unmanaged GSD override rather than being guessed into a tier.
 

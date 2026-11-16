@@ -37,6 +37,50 @@ class MergeTests(unittest.TestCase):
                 config.merge(base, local, default)
 
 
+class DiscoverTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_bare_planning_found_only_when_allowed(self):
+        (self.root / '.planning/codebase').mkdir(parents=True)
+        with self.assertRaisesRegex(config.ConfigError, 'expected .planning/config.json'):
+            config.discover(self.root)
+        self.assertEqual(config.discover(self.root, allow_bare=True), self.root.resolve())
+
+    def test_bare_planning_found_from_subdirectory(self):
+        (self.root / '.planning').mkdir()
+        (self.root / 'src/pkg').mkdir(parents=True)
+        self.assertEqual(config.discover(self.root / 'src/pkg', allow_bare=True), self.root.resolve())
+
+    def test_nearest_bare_planning_wins_over_configured_parent(self):
+        (self.root / '.planning').mkdir()
+        (self.root / '.planning/config.json').write_text('{}\n')
+        (self.root / 'child/.planning').mkdir(parents=True)
+        self.assertEqual(config.discover(self.root / 'child', allow_bare=True), (self.root / 'child').resolve())
+
+    def test_bare_planning_above_git_root_is_ignored(self):
+        (self.root / '.planning').mkdir()
+        repo = self.root / 'repo'
+        (repo / 'src').mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        with self.assertRaisesRegex(config.ConfigError, 'gsd-map-codebase or gsd-new-project'):
+            config.discover(repo / 'src', allow_bare=True)
+
+    def test_bare_planning_in_home_is_ignored(self):
+        (self.root / '.planning').mkdir()
+        (self.root / 'app').mkdir()
+        with mock.patch.dict('os.environ', {'HOME': str(self.root)}), \
+                self.assertRaisesRegex(config.ConfigError, 'gsd-map-codebase or gsd-new-project'):
+            config.discover(self.root / 'app', allow_bare=True)
+
+    def test_planning_file_is_not_a_project(self):
+        (self.root / '.planning').write_text('')
+        with self.assertRaisesRegex(config.ConfigError, 'gsd-map-codebase or gsd-new-project'):
+            config.discover(self.root, allow_bare=True)
+
+
 class ConfigTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

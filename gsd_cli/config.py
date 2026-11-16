@@ -27,11 +27,26 @@ class ConfigError(ValueError):
     """Unsafe, conflicting, or malformed project state."""
 
 
-def discover(start: Path | None = None) -> Path:
+def discover(start: Path | None = None, allow_bare: bool = False) -> Path:
+    """Find the nearest project root; allow_bare (init only) also accepts a config-less .planning/."""
     start = (start or Path.cwd()).resolve()
-    for root in (start, *start.parents):
+    roots = (start, *start.parents)
+    bare = allow_bare
+    if allow_bare:
+        # A stray .planning/ above the repository or in $HOME must not capture init.
+        toplevel = git(start, 'rev-parse', '--show-toplevel')
+        stop = Path(toplevel.stdout.strip()).resolve() if toplevel.returncode == 0 else None
+        home = Path.home().resolve()
+    for root in roots:
         if any((root / name).exists() for name in (WORKING, DEFAULT, POLICY)):
             return root
+        if bare and root != home and (root / '.planning').is_dir():
+            return root
+        if bare and root == stop:
+            bare = False
+    if allow_bare:
+        raise ConfigError('No GSD project found: run a GSD command such as gsd-map-codebase '
+                          'or gsd-new-project first to create .planning/')
     raise ConfigError('No GSD project found: expected .planning/config.json or config.default.json')
 
 

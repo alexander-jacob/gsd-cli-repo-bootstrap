@@ -25,6 +25,10 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+### Fixed
+
+- `gsd-cli init` now finds a project whose `.planning/` has no config file yet, such as one created only by `gsd-map-codebase`. Other commands still require a config file.
+
 ## [2.1.4](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.4) — 2026-11-16
 
 ### Added

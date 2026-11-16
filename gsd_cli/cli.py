@@ -67,7 +67,7 @@ def cli():
 @cli.command('init')
 def init_command():
     """Seed project policy and migrate persistent GSD defaults."""
-    root = config.discover()
+    root = config.discover(allow_bare=True)
     config.initialize(root)
     click.echo(f'Initialized {root}. Existing project policy and working config are preserved.\n'
                'Starter workflows use medium sessions, explicit reviewers and independent agent/reviewer efforts.\n'

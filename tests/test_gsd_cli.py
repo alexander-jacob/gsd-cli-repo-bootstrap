@@ -101,6 +101,27 @@ class GsdCliTestCase(GsdCliFixture):
         self.assertEqual(self.policy()['schema_version'], 1)
         self.assertEqual(json.loads((self.project / '.planning/config.default.json').read_text())['custom'], {'keep': True})
 
+    def test_init_on_bare_planning_from_subdirectory(self):
+        from test_versions import install_gsd
+        for runtime in ('claude', 'codex'):
+            install_gsd(self.home / f'.{runtime}')
+        self.config_path.unlink()
+        (self.project / '.planning/codebase').mkdir()
+        (self.project / 'src').mkdir()
+        result = self.run_launcher('init', cwd=self.project / 'src')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.policy()['schema_version'], 1)
+        self.assertTrue((self.project / '.planning/config.default.json').exists())
+        self.assertTrue((self.project / '.gitignore').exists())
+        self.assertFalse(self.config_path.exists())
+        self.assertFalse((self.project / 'src/gsd-cli.config.json').exists())
+
+    def test_status_still_requires_config_on_bare_planning(self):
+        self.config_path.unlink()
+        result = self.run_launcher('status')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('expected .planning/config.json', result.stderr)
+
     def test_all_levels_exact_arguments_and_routing(self):
         self.initialize()
         for workflow in ('plan', 'exec'):
