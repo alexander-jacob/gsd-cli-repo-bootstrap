@@ -199,4 +199,12 @@ python -m unittest discover -s tests -v
 python -m gsd_cli --help
 ```
 
+`gsd-cli --version` reads the version from package metadata, not from `pyproject.toml`. In a development checkout that metadata can be stale:
+
+- An editable install writes its metadata only when it is installed. After a version bump, it keeps reporting the old version until you rerun `python -m pip install -e .`.
+- `python -m gsd_cli` run from the repository root also sees a `gsd_workflow_cli.egg-info` directory left there by a package build, and may report that build's version instead.
+- A checkout that was never installed prints `gsd-cli unknown`.
+
+None of this changes behaviour. Reinstall (and delete a stale `*.egg-info`) before relying on the reported version, for example when the gsd-cli skill checks its minimum release.
+
 Tests use temporary projects, real temporary Git indexes and stub CLIs. No credentials, external AI calls or network are needed after dependencies are installed. CI tests Python 3.10 and 3.11. Package installation must also be checked outside the source checkout so missing JSON resources cannot hide behind imports from the repository.

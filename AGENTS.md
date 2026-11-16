@@ -15,7 +15,7 @@
 
 Use Python 3.10+ on POSIX, with Click and Pydantic installed in a virtual environment. Install with `pipx install .`; develop with `python -m pip install -e .` in a venv.
 
-- `python -m gsd_cli --help`: read-only help, including outside a project. `gsd-cli --version` (`-V`) prints the installed version from package metadata.
+- `python -m gsd_cli --help`: read-only help, including outside a project. `gsd-cli --version` (`-V`) prints the installed version from package metadata; an editable install keeps reporting the version from its last `pip install -e .`, and `python -m gsd_cli` from the repo root can read a leftover build `*.egg-info`, so reinstall after bumping `pyproject.toml`.
 - `python -m unittest discover -s tests -v`: full offline suite.
 - `gsd-cli WORKFLOW claude|codex [low|medium|high] [--secure] [-- CHILD_ARGS...]`: explicit workflow/runtime, medium default. Never automatically invoke GSD skills.
 - `gsd-cli check [claude|codex]`: read-only version diagnostics; check both when omitted, exit nonzero on any failure.
