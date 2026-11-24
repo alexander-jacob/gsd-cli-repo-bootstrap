@@ -322,7 +322,6 @@ class SchemaCommandTests(fixtures.GsdCliFixture):
         for name, args in (
             ('check', ('check',)),
             ('policy', ('policy',)),
-            ('preview', preview_args),
             ('sessions', ('sessions', 'claude')),
             ('status', ('status',)),
         ):
@@ -333,6 +332,10 @@ class SchemaCommandTests(fixtures.GsdCliFixture):
                 if name == 'sessions':
                     child, = envelope['data']['sessions'][0]['children']
                     self.assertEqual(child['agent_type'], 'gsd-executor')
+        if shutil.which('node', path=self.env['PATH']):
+            with self.subTest(schema='preview', ok=True):
+                preview = validate_envelope('preview', preview_args)
+                self.assertTrue(preview['data']['complete'])
 
         bundle = self.home / '.codex' / 'gsd-core'
         version = bundle / 'VERSION'
