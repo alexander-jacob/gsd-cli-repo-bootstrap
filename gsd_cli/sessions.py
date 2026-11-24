@@ -642,9 +642,8 @@ def launch_log_path() -> Path:
     return Path(state) / "gsd-cli" / "launches.jsonl"
 
 
-def record_launch(root: Path, runtime: str, profile: str, session_model: str,
-                  forwarded: list[str], data: dict, *, effort: str | None = None,
-                  workflow: str | None = None, level: str | None = None, policy: dict | None = None) -> None:
+def record_launch(root: Path, runtime: str, blueprint: str, session_model: str,
+                  forwarded: list[str], data: dict, *, effort: str, review: dict, policy: dict) -> None:
     """Append one launch record (mode 0600: it embeds whole configs); a failure
     only warns."""
     try:
@@ -655,15 +654,15 @@ def record_launch(root: Path, runtime: str, profile: str, session_model: str,
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "project": str(root),
         "runtime": runtime,
-        "profile": profile,
+        "blueprint": blueprint,
+        "review": review,
+        "policy": policy,
         "session_model": session_model,
         "session_effort": effort,
         "forwarded_args": forwarded,
         "config": data,
         "gsd_defaults": defaults,
     }
-    if workflow is not None:
-        record.update(workflow=workflow, level=level, policy=policy)
     try:
         log = launch_log_path()
         log.parent.mkdir(parents=True, exist_ok=True)

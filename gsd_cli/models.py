@@ -132,9 +132,8 @@ class GsdContext(Model):
 
 class PreviewData(Model):
     project: str
-    workflow: str
+    blueprint: str
     runtime: Literal['claude', 'codex']
-    level: Literal['low', 'medium', 'high']
     complete: bool
     session: SessionRequest
     reviewers: list[ReviewerRow]

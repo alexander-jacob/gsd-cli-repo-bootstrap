@@ -75,4 +75,10 @@ exports.cmdResolveExecution = function(cwd, agent, raw, opts) {
   }));
 };
 '''.replace('MODEL', json.dumps(model)))
+    if directory.name == '.claude':
+        agents = directory / 'agents'
+        agents.mkdir(exist_ok=True)
+        for role in AGENT_PHASES:
+            (agents / f'{role}.md').write_text(
+                f'---\nname: {role}\nmodel: sonnet\neffort: high\n---\nFixture prompt for {role}.\n')
     return core

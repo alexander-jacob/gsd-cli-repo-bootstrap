@@ -142,16 +142,12 @@ def reviewer_rows(data: dict, resolved: dict) -> list[tuple]:
     return rows
 
 
-def workflow_phases(policy: dict, workflow: str) -> set:
-    return set(policy['workflows'][workflow]['tasks']) | set(policy['workflows'][workflow]['task_levels'])
-
-
-def report(root: Path, workflow: str, runtime: str, level: str, policy: dict,
+def report(root: Path, runtime: str, blueprint: str, policy: dict,
            resolved: dict, data: dict, captured: list[str], argv: list[str],
            forwarded: list[str], inspection: dict) -> models.PreviewData:
     """The configuration preview as a machine-readable payload; same evidence as render."""
     catalog, results = inspection['catalog'], inspection['agents']
-    phases = workflow_phases(policy, workflow)
+    phases = policy['runtimes'][runtime]['blueprints'][blueprint]['phases']
     rows = []
     for agent in agent_names(data, inspection):
         meta = catalog.get(agent, {})
@@ -172,7 +168,7 @@ def report(root: Path, workflow: str, runtime: str, level: str, policy: dict,
         gsd_context = models.GsdContext(source=context.get('source'), workstream=inspection.get('workstream', ''),
                                         loader_differences=config.changed_paths(data, context.get('config', {})))
     return models.PreviewData(
-        project=str(root.resolve()), workflow=workflow, runtime=runtime, level=level,
+        project=str(root.resolve()), runtime=runtime, blueprint=blueprint,
         complete=inspection['complete'],
         session=models.SessionRequest(
             model=resolved['model'], effort=resolved['effort'],
@@ -184,12 +180,12 @@ def report(root: Path, workflow: str, runtime: str, level: str, policy: dict,
         diagnostics=inspection['diagnostics'], config=data)
 
 
-def render(root: Path, workflow: str, runtime: str, level: str, policy: dict,
+def render(root: Path, runtime: str, blueprint: str, policy: dict,
            resolved: dict, data: dict, captured: list[str], argv: list[str],
            forwarded: list[str], inspection: dict) -> str:
     state = 'COMPLETE' if inspection['complete'] else 'INCOMPLETE'
     install = inspection['installation']
-    lines = [f'Configuration preview: {display(workflow)}/{runtime}/{level} [{state}]',
+    lines = [f'Configuration preview: {runtime}/{display(blueprint)} [{state}]',
              f'Project: {display(str(root))}',
              f'GSD: {display(install["installed"])}; minimum {display(install["minimum"])}; {display(install["directory"])}']
     for label, path in [('Policy', config.POLICY), ('Defaults', config.DEFAULT), ('Working', config.WORKING)]:
@@ -272,16 +268,16 @@ def use_color(stream, environ: dict) -> bool:
     return stream.isatty() and 'NO_COLOR' not in environ
 
 
-def render_compact(root: Path, workflow: str, runtime: str, level: str, policy: dict,
+def render_compact(root: Path, runtime: str, blueprint: str, policy: dict,
                    resolved: dict, data: dict, captured: list[str], argv: list[str],
                    forwarded: list[str], inspection: dict, color: bool = False) -> str:
     state = 'COMPLETE' if inspection['complete'] else 'INCOMPLETE'
-    heading = f'Configuration preview: {display(workflow)}/{display(runtime)}/{display(level)} [{state}]'
+    heading = f'Configuration preview: {runtime}/{display(blueprint)} [{state}]'
     lines = [click.style(heading, fg='cyan', bold=True) if color else heading,
              f'Project: {display(str(root))}',
              f'Session request: {display(resolved["model"])} | effort {display(resolved["effort"])} | ? actual run unknown',
-             'Agents this workflow may use (configured → GSD resolved; no session was run)']
-    phases = workflow_phases(policy, workflow)
+             'Agents covered by this blueprint (configured → GSD resolved; no session was run)']
+    phases = policy['runtimes'][runtime]['blueprints'][blueprint]['phases']
     catalog, agents = inspection['catalog'], inspection['agents']
     configured = set()
     for key in (('model_overrides',), ('effort', 'agent_overrides')):

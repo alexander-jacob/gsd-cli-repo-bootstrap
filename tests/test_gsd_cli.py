@@ -77,9 +77,9 @@ Path(os.environ['GSD_TEST_LOG']).write_text(json.dumps({
     def initialize(self):
         # Only launcher tests need installed-GSD fixtures. Session reader tests
         # reuse setUp and intentionally test missing resolver installations.
-        from test_versions import install_gsd
+        from resolver_fixtures import install_resolver
         for runtime in ('claude', 'codex'):
-            install_gsd(self.home / f'.{runtime}')
+            install_resolver(self.home / f'.{runtime}')
         result = self.run_launcher("init")
         self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -102,9 +102,6 @@ class GsdCliTestCase(GsdCliFixture):
         self.assertEqual(json.loads((self.project / '.planning/config.default.json').read_text())['custom'], {'keep': True})
 
     def test_init_on_bare_planning_from_subdirectory(self):
-        from test_versions import install_gsd
-        for runtime in ('claude', 'codex'):
-            install_gsd(self.home / f'.{runtime}')
         self.config_path.unlink()
         (self.project / '.planning/codebase').mkdir()
         (self.project / 'src').mkdir()
@@ -122,81 +119,124 @@ class GsdCliTestCase(GsdCliFixture):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('expected .planning/config.json', result.stderr)
 
-    def test_all_levels_exact_arguments_and_routing(self):
-        self.initialize()
-        for workflow in ('plan', 'exec'):
-            for runtime in ('claude', 'codex'):
-                for level in ('low', 'medium', 'high'):
-                    with self.subTest(workflow=workflow, runtime=runtime, level=level):
-                        result = self.run_launcher(workflow, runtime, level)
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        model = {'claude': {'low': 'claude-sonnet-5-5', 'medium': 'claude-opus-5-5', 'high': 'claude-fable-5-2'},
-                                 'codex': {'low': 'gpt-6-luna', 'medium': 'gpt-6.1-sol', 'high': 'gpt-6-astra'}}[runtime][level]
-                        expected = {'model': model, 'effort': 'medium' if (workflow, runtime, level) == ('exec', 'codex', 'high') else level,
-                                    'permissions': 'normal' if (workflow, runtime) == ('plan', 'claude') else 'bypass',
-                                    'reviewers': ['astra-review' if runtime == 'claude' else 'fable-review', 'grok-review', 'gemini-review']}
-                        argv = ['--model', expected['model']]
-                        argv += ['--effort', expected['effort']] if runtime == 'claude' else ['-c', 'model_reasoning_effort=' + expected['effort']]
-                        if expected['permissions'] == 'bypass':
-                            argv += ['--dangerously-skip-permissions' if runtime == 'claude' else '--dangerously-bypass-approvals-and-sandbox']
-                        self.assertEqual(self.invocation()['args'], argv)
-                        self.assertEqual(self.invocation()['runtime'], runtime)
-                        self.assertEqual(self.config()['review']['default_reviewers'], expected['reviewers'])
-                        self.assertEqual(self.launches()[-1]['session_effort'], expected['effort'])
-                        self.assertEqual(self.launches()[-1]['level'], level)
-                        tier = {'low': 'haiku', 'medium': 'sonnet', 'high': 'opus'}[level]
-                        self.assertEqual(self.config()['models']['planning' if workflow == 'plan' else 'execution'], tier)
-                        self.assertEqual(self.config()['models']['verification'], 'opus')
-                        self.assertEqual(self.config()['model_overrides']['gsd-integration-checker'], 'opus' if runtime == 'claude' else 'gpt-6.1-sol')
-
-    def test_default_medium_and_custom_workflow_policy_authority(self):
+    def test_runtime_requires_its_own_blueprint(self):
         self.initialize()
         p = self.policy()
-        p['workflows']['ship'] = p['workflows']['exec']
-        p['runtimes']['codex']['medium']['session_model'] = 'my-model'
+        codex = p['runtimes']['codex']['blueprints']
+        codex['xhigh'] = codex.pop('medium')
+        codex['xhigh']['session']['model'] = 'my-model'
         self.put_policy(p)
+        before = self.snapshot()
+        for runtime, args, names in [('claude', [], 'high, low, medium'),
+                                     ('claude', ['xhigh'], 'high, low, medium'),
+                                     ('codex', [], 'high, low, xhigh')]:
+            result = self.run_launcher(runtime, *args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(names, result.stderr)
+            self.assertEqual(self.snapshot(), before)
+            self.assertFalse((self.root / 'state').exists())
         nested = self.project / 'src'
         nested.mkdir()
-        result = self.run_launcher('ship', 'codex', cwd=nested)
+        result = self.run_launcher('codex', 'xhigh', cwd=nested)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()['args'][:2], ['--model', 'my-model'])
         self.assertEqual(self.invocation()['cwd'], str(self.project))
-        self.assertEqual(self.launches()[-1]['workflow'], 'ship')
-        self.assertEqual(self.launches()[-1]['level'], 'medium')
+        self.assertEqual(self.invocation()['args'][:4], ['--model', 'my-model', '-c', 'model_reasoning_effort=medium'])
+        self.assertEqual(self.launches()[-1]['blueprint'], 'xhigh')
+
+    def test_starter_launch_arguments_and_snapshots(self):
+        self.initialize()
+        policy = self.policy()
+        models = {'claude': ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2'],
+                  'codex': ['gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']}
+        for runtime, names in models.items():
+            for blueprint, model in zip(('low', 'medium', 'high'), names):
+                with self.subTest(runtime=runtime, blueprint=blueprint):
+                    result = self.run_launcher(runtime, blueprint)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    flags = (['--effort', blueprint, '--dangerously-skip-permissions'] if runtime == 'claude'
+                             else ['-c', 'model_reasoning_effort=' + blueprint, '--dangerously-bypass-approvals-and-sandbox'])
+                    self.assertEqual(self.invocation()['args'], ['--model', model, *flags])
+                    self.assertEqual(self.invocation()['runtime'], runtime)
+                    launch = self.launches()[-1]
+                    self.assertEqual(launch['blueprint'], blueprint)
+                    self.assertEqual(launch['session_effort'], blueprint)
+                    self.assertEqual(launch['policy'], policy)
+                    self.assertEqual(launch['config'], self.config())
+                    self.assertEqual(launch['review'], policy['runtimes'][runtime]['review'])
+                    self.assertEqual(self.config()['review']['default_reviewers'], launch['review']['default_reviewers'])
 
     def test_exact_forwarding_boundary_and_secure(self):
         self.initialize()
         forwarded = ['--help', '--secure', '--model', 'override', '--', '~high', 'with spaces']
-        result = self.run_launcher('exec', 'claude', '--secure', '--', *forwarded)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.invocation()['args'], ['--model', 'claude-opus-5-5', '--effort', 'medium', *forwarded])
-        self.assertEqual(self.launches()[-1]['forwarded_args'], forwarded)
-        self.assertNotIn('--dangerously-skip-permissions', self.invocation()['args'])
+        for runtime, flags in [('claude', ['--model', 'claude-opus-5-5', '--effort', 'medium']),
+                               ('codex', ['--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=medium'])]:
+            result = self.run_launcher(runtime, 'medium', '--secure', '--', *forwarded)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.invocation()['args'], flags + forwarded)
+            self.assertEqual(self.launches()[-1]['forwarded_args'], forwarded)
 
     def test_help_and_errors_never_write(self):
         self.initialize()
         before = self.snapshot()
-        for args in [('--help',), ('init', '--help'), ('exec', '--help'), ('exec', 'codex', '--help')]:
+        for args in [('--help',), ('init', '--help'), ('claude', '--help'), ('codex', 'medium', '--help')]:
             result = self.run_launcher(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.snapshot(), before)
-        for args in [('exec', 'codex', '--unknown'), ('exec', 'codex', 'huge'), ('codex', 'plan')]:
+        for args in [('codex', 'medium', '--unknown'), ('codex', 'medium', 'huge'), ('codex', 'plan')]:
             result = self.run_launcher(*args)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.snapshot(), before)
-        self.assertIn('plan codex', self.run_launcher('codex', 'plan').stderr)
+        self.assertIn('gsd-cli codex BLUEPRINT', self.run_launcher('plan', 'codex').stderr)
+        self.assertEqual(self.run_launcher('claude', '--help', cwd=self.root).returncode, 0)
         self.put_policy({'broken': True})
         self.assertEqual(self.run_launcher('--help').returncode, 0)
         self.assertEqual(self.run_launcher('init', '--help').returncode, 0)
         self.assertEqual(self.run_launcher('--help', cwd=self.root).returncode, 0)
 
+    def test_invalid_option_combinations_do_not_prepare(self):
+        self.initialize()
+        before = self.snapshot()
+        for options in [('--json',), ('--details',), ('--config', '--json', '--details')]:
+            result = self.run_launcher('claude', 'low', *options)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            if '--json' in options:
+                envelope = json.loads(result.stdout)
+                self.assertFalse(envelope['ok'])
+                self.assertEqual(envelope['error']['kind'], 'usage')
+            self.assertEqual(self.snapshot(), before)
+            self.assertFalse((self.root / 'state').exists())
+
+    def test_version_one_policy_requires_manual_conversion_before_launch(self):
+        self.initialize()
+        self.put_policy({'schema_version': 1, 'workflows': {}})
+        before = self.snapshot()
+        result = self.run_launcher('claude', 'medium')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('MIGRATION.md', result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / 'state').exists())
+
+    def test_broken_selected_local_install_never_falls_back_at_launch(self):
+        self.initialize()
+        local = self.project / '.codex' / 'gsd-core'
+        local.mkdir(parents=True)
+        before = self.snapshot()
+        result = self.run_launcher('codex', 'low')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(str(local), result.stderr)
+        self.assertIn('launch blocked', result.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / 'state').exists())
+
     def test_incomplete_policy_does_not_fall_back_or_write(self):
         self.initialize()
         p = self.policy()
-        del p['runtimes']['codex']['low']
+        del p['runtimes']['codex']['blueprints']['low']['phases']['execution']
         self.put_policy(p)
         before = self.snapshot()
-        result = self.run_launcher('exec', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('runtimes.codex', result.stderr)
         self.assertEqual(self.snapshot(), before)
@@ -204,10 +244,10 @@ class GsdCliTestCase(GsdCliFixture):
 
     def test_capture_default_stability_and_read_only_status(self):
         self.initialize()
-        self.assertEqual(self.run_launcher('plan', 'codex').returncode, 0)
+        self.assertEqual(self.run_launcher('codex', 'medium').returncode, 0)
         default = self.project / '.planning/config.default.json'
         before = default.read_bytes()
-        self.assertEqual(self.run_launcher('exec', 'claude').returncode, 0)
+        self.assertEqual(self.run_launcher('claude', 'medium').returncode, 0)
         self.assertEqual(default.read_bytes(), before)
         w = self.config()
         w['workflow']['research'] = False
@@ -215,7 +255,7 @@ class GsdCliTestCase(GsdCliFixture):
         before = self.snapshot()
         self.assertEqual(self.run_launcher('status').returncode, 0)
         self.assertEqual(self.snapshot(), before)
-        result = self.run_launcher('exec', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('workflow.research', result.stderr)
         self.assertFalse(json.loads(default.read_text())['workflow']['research'])
@@ -225,7 +265,7 @@ class GsdCliTestCase(GsdCliFixture):
         self.config_path.unlink()
         (self.project / '.planning/.gsd-cli-sync.json').unlink()
         self.assertEqual(self.run_launcher('status').returncode, 0)
-        result = self.run_launcher('plan', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.config_path.exists())
 
@@ -234,7 +274,7 @@ class GsdCliTestCase(GsdCliFixture):
         (self.bin / 'codex').unlink()
         env = {**self.env, 'PATH': str(self.bin)}
         before = self.snapshot()
-        result = self.run_launcher('exec', 'codex', env=env)
+        result = self.run_launcher('codex', 'medium', env=env)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Cannot find CLI', result.stderr)
         self.assertEqual(self.snapshot(), before)
@@ -243,13 +283,13 @@ class GsdCliTestCase(GsdCliFixture):
     def test_billing_guards_follow_custom_reviewer_adapters(self):
         self.initialize()
         p = self.policy()
-        p['reviewers']['custom'] = {'cli': 'claude', 'model': 'custom'}
-        p['reviewer_groups']['custom'] = ['custom']
-        p['workflows']['exec']['reviewer_groups']['codex'] = 'custom'
+        review = p['runtimes']['codex']['review']
+        review['reviewer_instances']['custom'] = {'cli': 'claude', 'model': 'custom'}
+        review['default_reviewers'] = ['custom']
         self.put_policy(p)
         before = self.snapshot()
         for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY'):
-            result = self.run_launcher('exec', 'codex', env={**self.env, key: 'test-only'})
+            result = self.run_launcher('codex', 'medium', env={**self.env, key: 'test-only'})
             self.assertNotEqual(result.returncode, 0, key)
             self.assertIn('Refusing', result.stderr)
             self.assertEqual(self.snapshot(), before)
@@ -257,10 +297,9 @@ class GsdCliTestCase(GsdCliFixture):
     def test_unselected_adapter_does_not_trigger_billing_guard(self):
         self.initialize()
         p = self.policy()
-        p['reviewer_groups']['none'] = []
-        p['workflows']['exec']['reviewer_groups']['claude'] = 'none'
+        p['runtimes']['claude']['review']['default_reviewers'] = []
         self.put_policy(p)
-        result = self.run_launcher('exec', 'claude', env={**self.env, 'OPENAI_API_KEY': 'test-only'})
+        result = self.run_launcher('claude', 'medium', env={**self.env, 'OPENAI_API_KEY': 'test-only'})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.config()['review']['default_reviewers'], [])
 
@@ -268,14 +307,14 @@ class GsdCliTestCase(GsdCliFixture):
         self.initialize()
         state = self.root / 'state'
         state.write_text('blocked')
-        result = self.run_launcher('exec', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('could not write launch log', result.stderr)
         self.assertTrue(self.log.exists())
 
     def test_legacy_project_requires_explicit_init(self):
         before = self.snapshot()
-        result = self.run_launcher('plan', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('gsd-cli init', result.stderr)
         self.assertEqual(self.snapshot(), before)
@@ -305,7 +344,7 @@ class GsdCliTestCase(GsdCliFixture):
         (self.home / '.codex/gsd-core/VERSION').write_text('1.18.0')
         before = self.snapshot()
         for extra in ((), ('--secure',)):
-            result = self.run_launcher('exec', 'codex', *extra)
+            result = self.run_launcher('codex', 'medium', *extra)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('1.18.0', result.stderr)
             self.assertIn('1.21.0', result.stderr)
@@ -335,13 +374,13 @@ class GsdCliTestCase(GsdCliFixture):
                 version.unlink()
             else:
                 version.write_text(content)
-            result = self.run_launcher('exec', 'codex')
+            result = self.run_launcher('codex', 'medium')
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(self.snapshot(), before)
             self.assertFalse(self.log.exists())
         version.write_text('1.21.0')
         (self.home / '.codex/gsd-core/bin/gsd-tools.cjs').unlink()
-        self.assertEqual(self.run_launcher('exec', 'codex').returncode, 1)
+        self.assertEqual(self.run_launcher('codex', 'medium').returncode, 1)
         self.assertEqual(self.snapshot(), before)
 
     def test_project_floor_is_authoritative_and_old_other_runtime_does_not_block(self):
@@ -351,7 +390,7 @@ class GsdCliTestCase(GsdCliFixture):
         self.put_policy(p)
         (self.home / '.codex/gsd-core/VERSION').write_text('1.18.0')
         (self.home / '.claude/gsd-core/VERSION').write_text('1.0.0')
-        result = self.run_launcher('exec', 'codex')
+        result = self.run_launcher('codex', 'medium')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.policy()['gsd']['min_version'], '1.18.0')
 
@@ -373,7 +412,7 @@ class GsdCliTestCase(GsdCliFixture):
         p.pop('gsd', None)
         self.put_policy(p)
         before = self.snapshot()
-        for args in [('exec', 'codex'), ('check',), ('init',)]:
+        for args in [('codex', 'medium'), ('check',), ('init',)]:
             result = self.run_launcher(*args)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('gsd.min_version', result.stderr)
@@ -397,7 +436,7 @@ class GsdCliTestCase(GsdCliFixture):
                           ['-C' + str(destination)], ['-C=' + str(destination)],
                           ['--cd=' + str(destination)]):
             with self.subTest(forwarded=forwarded):
-                result = self.run_launcher('exec', 'codex', '--', *forwarded)
+                result = self.run_launcher('codex', 'medium', '--', *forwarded)
                 self.assertNotEqual(result.returncode, 0, result.stderr)
                 self.assertIn('destination project', result.stderr)
                 self.assertEqual(self.snapshot(), before)
@@ -407,6 +446,6 @@ class GsdCliTestCase(GsdCliFixture):
     def test_literal_child_prompt_directory_flags_still_forward_unchanged(self):
         self.initialize()
         forwarded = ['--', '-C', 'literal prompt', '--cd=also-literal']
-        result = self.run_launcher('exec', 'codex', '--', *forwarded)
+        result = self.run_launcher('codex', 'medium', '--', *forwarded)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.invocation()['args'][-len(forwarded):], forwarded)
