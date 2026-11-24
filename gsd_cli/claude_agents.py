@@ -1,4 +1,5 @@
 """Calculate project-local Claude agent updates from pristine installation files."""
+import codecs
 import hashlib
 import os
 import re
@@ -45,18 +46,20 @@ def check_agent_path(path: Path) -> None:
 
 
 def check_untracked(root: Path, paths) -> None:
-    paths = sorted(set(paths))
+    paths = set(paths)
     if not paths:
         return
-    result = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', *paths],
+    ancestors = {str(parent) for path in paths for parent in Path(path).parents if parent != Path('.')}
+    result = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', *sorted(paths | ancestors)],
                             capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
     if result.returncode:
         if b'not a git repository' in result.stderr:
             return
         raise AgentError(f'Cannot check Git index in {root}: {os.fsdecode(result.stderr).strip()}')
-    if result.stdout:
-        path = os.fsdecode(result.stdout.split(b'\0', 1)[0])
-        raise AgentError(f'Refusing Git-tracked agent path: {path}')
+    for entry in result.stdout.split(b'\0'):
+        path = os.fsdecode(entry)
+        if path in paths or path in ancestors or any(str(parent) in paths for parent in Path(path).parents):
+            raise AgentError(f'Refusing Git-tracked agent path: {path}')
 
 
 # Only plain or quoted scalar settings can be patched without reserializing YAML.
@@ -66,11 +69,22 @@ _SCALAR = re.compile(rb"""(?P<quote>['"]?)(?P<token>[A-Za-z0-9_.-]+)(?P=quote)(?
 
 def _header(source: bytes) -> tuple[list[bytes], int]:
     lines = source.splitlines(keepends=True)
-    if lines and lines[0].rstrip(b'\r\n') == b'---':
+    if lines and lines[0].removeprefix(codecs.BOM_UTF8).rstrip(b'\r\n') == b'---':
         for i, line in enumerate(lines[1:], 1):
             if line.rstrip(b'\r\n') == b'---':
                 return lines, i
     return lines, 0
+
+
+def _header_content(lines: list[bytes], end: int) -> tuple[int, list[tuple[int, bytes]]]:
+    content = [(i, lines[i].rstrip(b'\r\n')) for i in range(1, end)
+               if lines[i].strip() and not lines[i].lstrip().startswith(b'#')]
+    indent = min((len(line) - len(line.lstrip(b' ')) for _, line in content), default=0)
+    return indent, [(i, line[indent:]) for i, line in content]
+
+
+def _sequence_item(line: bytes) -> bool:
+    return line == b'-' or line.startswith((b'- ', b'-\t'))
 
 
 def render_definition(source: bytes, name: str, model: str, effort: str) -> bytes:
@@ -82,11 +96,9 @@ def render_definition(source: bytes, name: str, model: str, effort: str) -> byte
     values = {'name': name, 'model': model, 'effort': effort}
     seen = set()
     previous = None
-    for i in range(1, end):
-        line = lines[i].rstrip(b'\r\n')
-        if not line.strip() or line.lstrip().startswith(b'#'):
-            continue
-        if line.startswith(b' '):
+    indent, content = _header_content(lines, end)
+    for i, line in content:
+        if line.startswith(b' ') or _sequence_item(line):
             if previous is None or previous in values:
                 raise AgentError(f'{name}: ambiguous indented header at line {i+1}')
             continue
@@ -102,12 +114,12 @@ def render_definition(source: bytes, name: str, model: str, effort: str) -> byte
         seen.add(previous)
         if previous == 'name' and scalar['token'] != name.encode():
             raise AgentError(f'{name}: source declares another name')
-        start = match.start('value') + scalar.start('token')
+        start = indent + match.start('value') + scalar.start('token')
         lines[i] = lines[i][:start] + values[previous].encode() + lines[i][start + len(scalar['token']):]
     if 'name' not in seen:
         raise AgentError(f'{name}: missing name header')
-    newline = lines[0][3:]
-    lines[end:end] = [f'{key}: {values[key]}'.encode() + newline
+    newline = lines[0].removeprefix(codecs.BOM_UTF8)[3:]
+    lines[end:end] = [b' ' * indent + f'{key}: {values[key]}'.encode() + newline
                       for key in ('model', 'effort') if key not in seen]
     return b''.join(lines)
 
@@ -127,16 +139,11 @@ def _raise(error):
 def _declared_names(source: bytes, path: Path):
     """Scan only root mapping keys, including uniformly indented YAML headers."""
     lines, end = _header(source)
-    content = [line.rstrip(b'\r\n') for line in lines[1:end]
-               if line.strip() and not line.lstrip().startswith(b'#')]
-    if not content:
-        return
-    indent = min(len(line) - len(line.lstrip(b' ')) for line in content)
+    _, content = _header_content(lines, end)
     found_name = False
     ambiguous = False
-    for raw in content:
-        line = raw[indent:]
-        if line.startswith(b' '):
+    for _, line in content:
+        if line.startswith(b' ') or _sequence_item(line):
             continue
         key = _KEY.fullmatch(line)
         if key is None:

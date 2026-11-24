@@ -26,6 +26,23 @@ class RendererTests(unittest.TestCase):
             self.assertEqual(render_definition(source, ROLE, model, 'low'),
                              source.replace(b'\n---\n', f'\nmodel: {model}\neffort: low\n---\n'.encode()))
 
+    def test_preserve_indentless_sequences_at_root_indentation(self):
+        for indent in (b'', b'  '):
+            header = [b'name: gsd-executor', b'tools:', b'- Read', b'- Edit',
+                      b'hooks: # keep', b'- model: nested', b'  effort: nested',
+                      b"model: 'sonnet'  # model"]
+            source = b'---\r\n' + b''.join(indent + row + b'\r\n' for row in header) + b'---\r\nbody'
+            expected = source.replace(b"'sonnet'", b"'opus'").replace(
+                b'---\r\nbody', indent + b'effort: high\r\n---\r\nbody')
+            with self.subTest(indent=indent):
+                self.assertEqual(render_definition(source, ROLE, 'opus', 'high'), expected)
+
+    def test_refuse_sequence_as_target_setting(self):
+        for key in (b'name', b'model', b'effort'):
+            source = b'---\nname: gsd-executor\n' + key + b':\n- low\n---\n'
+            with self.subTest(key=key), self.assertRaises(AgentError):
+                render_definition(source, ROLE, 'opus', 'high')
+
     def test_missing_effort(self):
         source = b'---\nname: gsd-executor\nmodel: opus\n---\n'
         self.assertEqual(render_definition(source, ROLE, 'haiku', 'high'),
@@ -122,6 +139,37 @@ class AgentPlanTests(unittest.TestCase):
         (self.root / '.claude').mkdir()
         with self.assertRaisesRegex(AgentError, 'coincide'):
             plan_agents(self.root, self.root / '.claude/get-shit-done', self.agents, {})
+
+    def test_byte_order_mark_in_source_and_duplicate(self):
+        bom = b'\xef\xbb\xbf'
+        self.source.write_bytes(bom + SOURCE)
+        rendered = self.plan().changes[DEST][1]
+        self.assertEqual(rendered, bom + render_definition(SOURCE, ROLE, 'opus', 'high'))
+        duplicate = self.dest.parent / 'different.md'
+        duplicate.parent.mkdir(parents=True)
+        duplicate.write_bytes(bom + SOURCE)
+        with self.assertRaisesRegex(AgentError, 'different.md'):
+            self.plan()
+
+    def test_indexed_missing_ancestor(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        self.dest.parent.parent.mkdir()
+        for symlink in (False, True):
+            if symlink:
+                self.dest.parent.symlink_to(self.source.parent, target_is_directory=True)
+            else:
+                self.dest.parent.write_bytes(b'file')
+            subprocess.run(['git', 'add', '.claude/agents'], cwd=self.root, check=True)
+            self.dest.parent.unlink()
+            with self.subTest(symlink=symlink), self.assertRaisesRegex(AgentError, '.claude/agents'):
+                self.plan()
+
+    def test_unrelated_tracked_sibling(self):
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
+        self.dest.parent.mkdir(parents=True)
+        (self.dest.parent / 'my-agent.md').write_bytes(b'---\nname: my-agent\n---\n')
+        subprocess.run(['git', 'add', '.claude/agents/my-agent.md'], cwd=self.root, check=True)
+        self.assertEqual(self.plan().evidence[ROLE]['action'], 'create')
 
     def test_hardlinked_source_and_recreation(self):
         owned = self.apply_initial()
