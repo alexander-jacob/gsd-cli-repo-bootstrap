@@ -10,6 +10,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from . import config
+from .policy import is_agent_name
 from .versions import check_installation, format_result
 
 QUERY_TIMEOUT = 20
@@ -126,7 +127,9 @@ def load_catalog(installation: Path) -> dict:
     if not isinstance(agents, dict) or not agents:
         raise config.ConfigError(f'{path}: expected a nonempty agents object')
     for name, metadata in agents.items():
-        if not name or not isinstance(metadata, dict):
+        if not is_agent_name(name):
+            raise config.ConfigError(f'{path}: agents.{name!r}: expected a GSD agent name')
+        if not isinstance(metadata, dict):
             raise config.ConfigError(f'{path}: invalid metadata for agent {name!r}')
         phase = metadata.get('phaseType')
         if phase is not None and (not isinstance(phase, str) or not phase.strip()):

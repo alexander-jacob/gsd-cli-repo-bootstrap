@@ -3,7 +3,7 @@ import copy
 import re
 import unittest
 
-from gsd_cli.policy import PolicyError, load_default, validate
+from gsd_cli.policy import PolicyError, load_default, resolve, validate
 
 
 class PolicyTests(unittest.TestCase):
@@ -132,7 +132,6 @@ class BlueprintRoutingTests(unittest.TestCase):
         }}
 
     def resolve(self, runtime='codex', name='high'):
-        from gsd_cli.policy import resolve
         return resolve(self.policy, runtime, name, self.catalog)
 
     def test_executor_inherits_only_missing_fields(self):
@@ -166,6 +165,13 @@ class BlueprintRoutingTests(unittest.TestCase):
         del self.catalog['agents']['gsd-codebase-mapper']
         with self.assertRaisesRegex(PolicyError, r'runtimes\.codex\.blueprints\.high\.agents\.gsd-codebase-mapper'):
             self.resolve()
+
+    def test_catalog_role_must_be_a_valid_gsd_agent_name(self):
+        for role in ('executor', 'gsd-../../executor'):
+            with self.subTest(role=role):
+                catalog = {'agents': {**self.catalog['agents'], role: {'phaseType': 'execution'}}}
+                with self.assertRaisesRegex(PolicyError, re.escape(role)):
+                    resolve(self.policy, 'codex', 'high', catalog)
 
     def test_uncovered_role_is_visible_without_managed_values(self):
         resolved = self.resolve()

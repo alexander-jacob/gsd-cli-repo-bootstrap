@@ -50,6 +50,10 @@ def string(value, path):
         raise PolicyError(f'{path}: expected a nonempty string')
 
 
+def is_agent_name(name) -> bool:
+    return isinstance(name, str) and re.fullmatch(AGENT_NAME_PATTERN, name) is not None
+
+
 def validate_settings(settings, path, runtime, *, agent=False, partial=False):
     fields = ('model', 'effort')
     obj(settings, path, () if partial else fields, fields if partial else ())
@@ -127,7 +131,7 @@ def validate(p: dict) -> None:
                 validate_settings(settings, f'{blueprint_path}.phases.{phase}', runtime, agent=True)
             for agent, settings in obj(blueprint.get('agents', {}), f'{blueprint_path}.agents').items():
                 agent_path = f'{blueprint_path}.agents.{agent}'
-                if not isinstance(agent, str) or not re.fullmatch(AGENT_NAME_PATTERN, agent):
+                if not is_agent_name(agent):
                     raise PolicyError(f'{agent_path}: expected a GSD agent name')
                 validate_settings(settings, agent_path, runtime, agent=True, partial=True)
     obj(p['gsd_defaults'], 'gsd_defaults')
@@ -160,6 +164,8 @@ def resolve(p: dict, runtime: str, blueprint: str, catalog: dict) -> dict:
     values['review', 'parallel_lanes'] = review['parallel_lanes']
     agents = {}
     for name, metadata in registered.items():
+        if not is_agent_name(name):
+            raise PolicyError(f'catalog.agents.{name!r}: expected a GSD agent name')
         phase = metadata.get('phaseType')
         defaults = selected['phases'].get(phase, {})
         override = overrides.get(name, {})
