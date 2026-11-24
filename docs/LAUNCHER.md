@@ -134,7 +134,7 @@ Default-only edits propagate locally. A missing working file is recreated. A fre
 
 Writes use individual atomic replacements and a private `.planning/.gsd-cli-journal.json`; the set of files is **not** one atomic filesystem transaction. The next mutating operation resumes an interrupted transaction only if each target still matches its recorded before/after content. If an external edit prevents replay, preserve copies of the edited files and journal, compare the target with the journal's before/after versions, and reconcile intentionally before retrying. Do not delete the journal and then let partial state masquerade as a normal edit.
 
-The short `.gsd-cli.lock` protects preparation, not a running AI session. Use separate worktrees for simultaneous sessions with different blueprints. Help, status, check and sessions do not recover, capture or write config. `status` reports whether recovery is pending.
+The launcher releases `.gsd-cli.lock` after preparation. Use one active session per worktree. Even the same blueprint can generate different config or agent files after policy edits or an installation update. Help, status, check and sessions do not recover, capture or write config. `status` reports whether recovery is pending.
 
 ## Billing and history
 

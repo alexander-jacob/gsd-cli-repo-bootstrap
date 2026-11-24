@@ -14,6 +14,8 @@ gsd-cli policy
 gsd-cli check
 ```
 
+The unqualified `gsd-cli check` checks both installed GSD bundles. If you use just one runtime, run `gsd-cli check codex` or `gsd-cli check claude`; only that runtime’s GSD installation must pass for its launch.
+
 An existing `.planning/` directory is enough to initialize. Review the generated `gsd-cli.config.json`, `.planning/config.default.json` and `.gitignore`. If Git tracked `.planning/config.json`, init stages its removal from the index and preserves the working file. For an existing version-one policy, follow the [manual conversion walkthrough](MIGRATION.md#convert-a-version-one-project-policy).
 
 To discover the available names, enter either runtime alone. These commands print the choices and exit 1. The starter lists `high, low, medium` for each runtime.
