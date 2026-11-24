@@ -1,7 +1,7 @@
 """Pydantic model of the project policy file and its JSON Schema."""
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, WithJsonSchema, model_validator
 
 from . import policy as rules
 
@@ -9,7 +9,8 @@ Level = Literal[rules.LEVELS]
 CodexEffort = Literal[rules.EFFORTS]
 ClaudeEffort = Literal[rules.CLAUDE_EFFORTS]
 ClaudeAgentModel = Literal[rules.CLAUDE_AGENT_MODELS]
-Text = Annotated[str, StringConstraints(pattern=r'^[^\x00]*\S[^\x00]*$')]
+TEXT_PATTERN = r'^[^\x00]*\S[^\x00]*$'
+Text = Annotated[str, StringConstraints(pattern=TEXT_PATTERN)]
 AgentName = Annotated[str, StringConstraints(pattern=rules.AGENT_NAME_PATTERN)]
 BlueprintName = Annotated[str, StringConstraints(pattern=rules.BLUEPRINT_NAME_PATTERN)]
 
@@ -18,6 +19,23 @@ Effort = TypeVar('Effort')
 SessionSettings = TypeVar('SessionSettings')
 AgentSettings = TypeVar('AgentSettings')
 NamedOverride = TypeVar('NamedOverride')
+
+
+def full_codex_model_id(value: str) -> str:
+    if value in rules.CLAUDE_AGENT_MODELS:
+        raise ValueError('expected a full Codex model ID')
+    return value
+
+
+CodexAgentModel = Annotated[
+    Text,
+    AfterValidator(full_codex_model_id),
+    WithJsonSchema({
+        'type': 'string',
+        'pattern': TEXT_PATTERN,
+        'not': {'enum': list(rules.CLAUDE_AGENT_MODELS)},
+    }),
+]
 
 
 def unique(items: list) -> list:
@@ -76,12 +94,13 @@ class Blueprint(Strict, Generic[SessionSettings, AgentSettings, NamedOverride]):
     agents: dict[AgentName, NamedOverride] = omissible(schema_extra={'additionalProperties': False})
 
 
-CodexSettings = ModelEffort[Text, CodexEffort]
+CodexSession = ModelEffort[Text, CodexEffort]
+CodexAgent = ModelEffort[CodexAgentModel, CodexEffort]
 ClaudeSession = ModelEffort[Text, ClaudeEffort]
 ClaudeAgent = ModelEffort[ClaudeAgentModel, ClaudeEffort]
 
 
-class CodexBlueprint(Blueprint[CodexSettings, CodexSettings, AgentOverride[Text, CodexEffort]]):
+class CodexBlueprint(Blueprint[CodexSession, CodexAgent, AgentOverride[CodexAgentModel, CodexEffort]]):
     pass
 
 

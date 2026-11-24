@@ -59,6 +59,38 @@ class PolicyFileTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     PolicyFile.model_validate(data)
 
+    def test_codex_agent_models_exclude_claude_aliases(self):
+        data = load_default()
+        for path in (
+            'runtimes.codex.blueprints.high.phases.execution.model',
+            'runtimes.codex.blueprints.high.agents.gsd-codebase-mapper.model',
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(ValidationError):
+                    PolicyFile.model_validate(mutated(data, path, 'opus'))
+                PolicyFile.model_validate(mutated(data, path, 'custom-provider/opus-compatible-v2'))
+
+    def test_published_schema_disallows_claude_aliases_in_codex_agent_models(self):
+        schema = PolicyFile.model_json_schema()
+
+        def resolve(node):
+            if '$ref' in node:
+                return schema['$defs'][node['$ref'].rsplit('/', 1)[-1]]
+            return node
+
+        def property_schema(node, name):
+            return resolve(node['properties'][name])
+
+        runtimes = property_schema(schema, 'runtimes')
+        blueprint_map = property_schema(property_schema(runtimes, 'codex'), 'blueprints')
+        blueprint = resolve(next(iter(blueprint_map['patternProperties'].values())))
+        phases = property_schema(blueprint, 'phases')
+        phase_model = property_schema(property_schema(phases, 'execution'), 'model')
+        agents = property_schema(blueprint, 'agents')
+        agent_model = property_schema(resolve(next(iter(agents['patternProperties'].values()))), 'model')
+        for model in (phase_model, agent_model):
+            self.assertCountEqual(model['not']['enum'], ('opus', 'fable', 'sonnet', 'haiku'))
+
     def test_missing_required_key_rejected(self):
         data = load_default()
         del data['gsd']

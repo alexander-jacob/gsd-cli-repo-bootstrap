@@ -59,6 +59,8 @@ def validate_settings(settings, path, runtime, *, agent=False, partial=False):
         model = settings['model']
         if agent and runtime == 'claude':
             choice(model, CLAUDE_AGENT_MODELS, f'{path}.model')
+        elif agent and model in CLAUDE_AGENT_MODELS:
+            raise PolicyError(f'{path}.model: expected a full Codex model ID, got Claude alias {model!r}')
         else:
             string(model, f'{path}.model')
     if 'effort' in settings:

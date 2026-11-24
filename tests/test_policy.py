@@ -69,6 +69,19 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(PolicyError, re.escape(expected)):
                     validate(data)
 
+    def test_codex_requires_full_agent_model_ids(self):
+        for alias in ('opus', 'fable', 'sonnet', 'haiku'):
+            for section, key in (('phases', 'execution'), ('agents', 'gsd-codebase-mapper')):
+                with self.subTest(alias=alias, section=section):
+                    data = copy.deepcopy(self.policy)
+                    settings = data['runtimes']['codex']['blueprints']['high'][section][key]
+                    settings['model'] = alias
+                    path = f'runtimes.codex.blueprints.high.{section}.{key}.model'
+                    with self.assertRaisesRegex(PolicyError, re.escape(path)):
+                        validate(data)
+                    settings['model'] = 'custom-provider/opus-compatible-v2'
+                    self.assertIsNone(validate(data))
+
     def test_missing_phase_in_inactive_blueprint_is_rejected(self):
         self.assertIn('blueprints', self.policy['runtimes']['codex'])
         del self.policy['runtimes']['codex']['blueprints']['low']['phases']['verification']
