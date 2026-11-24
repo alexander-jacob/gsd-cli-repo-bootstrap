@@ -451,13 +451,15 @@ def reviewer_expectation(review: dict | None, runtime: str) -> tuple:
         return None, None, None
     names = [name for name in selected if isinstance(name, str) and isinstance(definitions.get(name), dict)
              and definitions[name].get('cli') == runtime]
-    # The logs identify the adapter, so multiple active instances are ambiguous.
-    if len(names) != 1:
+    if not names:
         return None, None, None
     effort = review.get('effort')
-    model = expected_value(definitions[names[0]], 'model')
     adapter_effort = expected_value(effort, runtime) if isinstance(effort, dict) else None
-    return names[0], model, adapter_effort
+    # Every active instance shares the adapter's effort. The logs identify a
+    # particular instance and its configured model only when it is unique.
+    if len(names) > 1:
+        return None, None, adapter_effort
+    return names[0], expected_value(definitions[names[0]], 'model'), adapter_effort
 
 
 def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> None:
@@ -471,7 +473,7 @@ def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> No
         if expected and run.model and not model_matches(runtime, expected, run.model):
             run.marks.append(f"! {name} expects {expected}")
         if effort and run.effort and run.effort != effort:
-            run.marks.append(f"! {name} expects effort {effort}")
+            run.marks.append(f"! {name or runtime} expects effort {effort}")
         launch = None  # a reviewer's own subagents are not routed by the session's profile
     elif run.kind == "session":
         if launch and overridden_at_launch(launch):

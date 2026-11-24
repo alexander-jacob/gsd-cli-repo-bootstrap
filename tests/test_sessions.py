@@ -864,6 +864,23 @@ class SessionsCommandTests(SessionsTestCase):
         self.assertEqual(older.children[0].marks, ['! fast-review expects sonnet', '! fast-review expects effort low'])
         self.assertEqual((older.children[0].model, older.children[0].effort), ('claude-opus-5-5', 'high'))
 
+    def test_shared_reviewer_adapter_checks_effort_and_skips_inactive_adapter(self):
+        review = {'default_reviewers': ['first', 'second'], 'reviewer_instances': {
+            'first': {'cli': 'claude', 'model': 'sonnet'}, 'second': {'cli': 'claude', 'model': 'opus'},
+            'unused': {'cli': 'codex', 'model': 'other-model'}}, 'effort': {'claude': 'low', 'codex': 'high'}}
+        launch_record(self.root / 'state', self.project, 'claude', None, START - timedelta(seconds=1),
+                      'claude-opus-5-5', 'high', blueprint='careful', review=review)
+        claude_session(self.home, self.project, 'parent', START, 'claude-opus-5-5', 'high')
+        claude_session(self.home, self.project, 'claude-review', START + timedelta(seconds=15),
+                       'claude-fable-5-1', 'high', entrypoint='sdk-cli', prompt='# Cross-AI Plan Review Request')
+        codex_session(self.home, self.project, 'inactive-review', START + timedelta(seconds=30),
+                      'gpt-6-astra', 'low', source='exec')
+        env, _ = self.json_sessions('--json')
+        active, inactive = env.data.sessions[0].children
+        self.assertEqual(active.marks, ['! claude expects effort low'])
+        self.assertTrue(active.mismatch)
+        self.assertEqual(inactive.marks, [])
+
     def test_json_marks_mismatch(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium")
         launch_record(self.root / "state", self.project, "claude", "exec/medium",
