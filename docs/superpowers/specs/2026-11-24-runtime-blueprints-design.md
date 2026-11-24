@@ -60,6 +60,12 @@ Project JSON alone did not set effective Claude effort in the installed resolver
 4. Include creation, replacement, removal, and ownership changes in the existing locked, recoverable launch transaction. Support absence as a before/after state and compare all preconditions before recovery. Perform writes only for changed content. Git exclusions must cover generated files without hiding user-authored agents. Regeneration follows GSD updates on the next launcher invocation; starting Claude directly uses the last prepared definitions.
 5. Normal Codex preparation leaves Claude files alone. A pending interrupted Claude transaction must be handled consistently with existing journal rules. Preview shows prospective creates, updates, removals and conflicts using the same calculation. It leaves project files, ownership, index, and logs untouched.
 
+## README and user documentation
+
+Update the root `README.md` quick start to show initialization, preview and launch with an explicit runtime and blueprint. Show how to discover valid blueprint names and where to edit them. In `docs/index.md`, `docs/solution.md`, `docs/LAUNCHER.md` and `docs/configuration.md`, align the command reference and policy examples with the shipped starter. Explain session, phase and per-agent settings, per-runtime reviewers, permission defaults, and how Claude agent files are generated, refreshed, ignored and safely removed.
+
+Update `docs/checks.md`, `docs/json-output.md` and `docs/best-practices.md` with current preview commands, output fields and advice for one active session per worktree. Update `MIGRATION.md` with an old-to-new command example and the manual policy conversion steps. Label historical syntax wherever it helps explain conversion.
+
 ## Acceptance
 
 - A Codex-only `xhigh` blueprint is selectable. Missing names and incomplete policies fail before project writes. Each session gets the selected runtime's reviewer configuration.
@@ -67,5 +73,6 @@ Project JSON alone did not set effective Claude effort in the installed resolver
 - After an upstream prompt or tool change, a fresh Claude launch carries it into the project copy. After an override removal, the file reverts to its phase values. After role removal, only an unmodified stale owned file disappears. A manually edited copy or same-name user file survives with a diagnostic. An unrelated agent remains Git-trackable.
 - Simulate interrupted update and deletion, retry after a conflict, repeated identical launches and read-only previews using temporary projects and Git indexes. Tests must use offline fixtures and stub runtimes. Check installed resolver and CLI discovery separately without paid model calls.
 - Existing diagnostics, subscription checks, unmanaged config capture and generation of JSON schemas continue to work. Historical logs still display the workflow/profile recorded at the time.
+- Verify the README quick start and documented preview against a temporary initialized project with offline fixtures. Check the policy example against the shipped schema, compare JSON examples with the CLI output, and build the published guides with `mkdocs build --strict`.
 
 The builder can choose the ownership metadata layout, frontmatter editing technique and journal encoding within those constraints. Project-local generation belongs in the launcher. Installation changes, automatic policy conversion, publishing and a session-lifetime lock are outside this design.
