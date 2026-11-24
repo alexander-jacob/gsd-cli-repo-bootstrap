@@ -43,6 +43,20 @@ class RendererTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(AgentError):
                 render_definition(source, ROLE, 'opus', 'high')
 
+    def test_delimiter_variants_preserve_bytes_and_insert_only_line_endings(self):
+        for eol in (b'\n', b'\r\n'):
+            for opener in (b'---  ', b'---\t', b'\xef\xbb\xbf--- '):
+                for closer in (b'---  ', b'  ---', b'\t--- # comment'):
+                    source = eol.join((opener, b'name: gsd-executor', closer, b'Body\xff'))
+                    expected = eol.join((opener, b'name: gsd-executor', b'model: opus',
+                                         b'effort: high', closer, b'Body\xff'))
+                    with self.subTest(eol=eol, opener=opener, closer=closer):
+                        self.assertEqual(render_definition(source, ROLE, 'opus', 'high'), expected)
+
+    def test_refuse_ambiguous_closing_delimiter(self):
+        with self.assertRaisesRegex(AgentError, 'delimiter'):
+            render_definition(b'---\nname: gsd-executor\n---suffix\nbody', ROLE, 'opus', 'high')
+
     def test_missing_effort(self):
         source = b'---\nname: gsd-executor\nmodel: opus\n---\n'
         self.assertEqual(render_definition(source, ROLE, 'haiku', 'high'),
@@ -194,6 +208,15 @@ class AgentPlanTests(unittest.TestCase):
         hand.write_bytes(b'---\n  name: gsd-executor\n  tools: Read\n---\n')
         with self.assertRaisesRegex(AgentError, 'custom.md'):
             self.plan()
+
+    def test_nested_author_collision_with_host_delimiters(self):
+        hand = self.dest.parent / 'nested/custom.md'
+        hand.parent.mkdir(parents=True)
+        for closer in (b'--- ', b'  ---', b'--- # end', b'---suffix'):
+            hand.write_bytes(b'---\t\r\nname: gsd-executor\r\n' + closer + b'\r\nBody')
+            with self.subTest(closer=closer), self.assertRaisesRegex(AgentError, 'custom.md'):
+                self.plan()
+            self.assertFalse(self.dest.exists())
 
     def test_uncovered_agent(self):
         self.source.unlink()

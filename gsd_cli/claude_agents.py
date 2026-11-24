@@ -69,9 +69,12 @@ _SCALAR = re.compile(rb"""(?P<quote>['"]?)(?P<token>[A-Za-z0-9_.-]+)(?P=quote)(?
 
 def _header(source: bytes) -> tuple[list[bytes], int]:
     lines = source.splitlines(keepends=True)
-    if lines and lines[0].removeprefix(codecs.BOM_UTF8).rstrip(b'\r\n') == b'---':
+    # Claude accepts JavaScript whitespace after the opening marker and any
+    # suffix after a closing marker. Identity discovery must see these files.
+    opening = lines[0].removeprefix(codecs.BOM_UTF8).decode('utf-8', 'replace') if lines else ''
+    if re.fullmatch(r'---[ \t\r\n\f\v\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*', opening):
         for i, line in enumerate(lines[1:], 1):
-            if line.rstrip(b'\r\n') == b'---':
+            if line.lstrip(b' \t').startswith(b'---'):
                 return lines, i
     return lines, 0
 
@@ -93,6 +96,8 @@ def render_definition(source: bytes, name: str, model: str, effort: str) -> byte
     lines, end = _header(source)
     if not end:
         raise AgentError(f'{name}: missing or incomplete Markdown frontmatter')
+    if not re.fullmatch(rb'[ \t]*---(?:[ \t]+#.*|[ \t]*)', lines[end].rstrip(b'\r\n')):
+        raise AgentError(f'{name}: ambiguous closing frontmatter delimiter')
     values = {'name': name, 'model': model, 'effort': effort}
     seen = set()
     previous = None
@@ -118,7 +123,7 @@ def render_definition(source: bytes, name: str, model: str, effort: str) -> byte
         lines[i] = lines[i][:start] + values[previous].encode() + lines[i][start + len(scalar['token']):]
     if 'name' not in seen:
         raise AgentError(f'{name}: missing name header')
-    newline = lines[0].removeprefix(codecs.BOM_UTF8)[3:]
+    newline = lines[0][len(lines[0].rstrip(b'\r\n')):]
     lines[end:end] = [b' ' * indent + f'{key}: {values[key]}'.encode() + newline
                       for key in ('model', 'effort') if key not in seen]
     return b''.join(lines)
