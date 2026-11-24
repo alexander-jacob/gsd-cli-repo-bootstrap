@@ -332,12 +332,12 @@ class ConfigTests(unittest.TestCase):
         self.catalog['agents']['gsd-doc-classifier']['phaseType'] = 'unknown'
         original = config.atomic_write
         applied = []
-        def interrupt(path, content):
+        def interrupt(path, content, **kwargs):
             if path != self.root / config.JOURNAL:
                 if applied:
                     raise OSError('interrupt after first target')
                 applied.append(path)
-            return original(path, content)
+            return original(path, content, **kwargs)
         with mock.patch.object(config, 'atomic_write', side_effect=interrupt), self.assertRaises(OSError):
             self.sync('claude', 'high')
         self.assertEqual(len(applied), 1)
@@ -362,6 +362,90 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError, 'edited externally'):
             config.recover(self.root)
         self.assertEqual(before, self.file_snapshot())
+
+    def inject_after_first_write(self, operation, change):
+        write = config.atomic_write
+        injected = []
+        def interleave(path, content, **kwargs):
+            write(path, content, **kwargs)
+            if path != self.root / config.JOURNAL and not injected:
+                injected.append(path)
+                change()
+        with mock.patch.object(config, 'atomic_write', side_effect=interleave), self.assertRaises(config.ConfigError):
+            operation()
+        self.assertEqual(len(injected), 1)
+        self.assertTrue((self.root / config.JOURNAL).exists())
+
+    def test_concurrent_creation_is_preserved_during_launch(self):
+        self.init()
+        target = self.root / '.claude/agents/gsd-executor.md'
+        target.parent.mkdir(parents=True)
+        self.inject_after_first_write(lambda: self.sync('claude'), lambda: target.write_bytes(b'new local agent'))
+        self.assertEqual(target.read_bytes(), b'new local agent')
+
+    def test_create_never_replaces_a_file_appearing_at_install(self):
+        self.init()
+        target = self.root / '.claude/agents/gsd-executor.md'
+        link = os.link
+        def create_before_link(source, destination):
+            if destination == target:
+                target.write_bytes(b'concurrent create')
+            return link(source, destination)
+        with mock.patch.object(os, 'link', side_effect=create_before_link), \
+                self.assertRaisesRegex(config.ConfigError, 'created externally'):
+            self.sync('claude')
+        self.assertEqual(target.read_bytes(), b'concurrent create')
+        self.assertTrue((self.root / config.JOURNAL).exists())
+
+    def test_concurrent_edit_is_preserved_during_agent_replacement(self):
+        self.init()
+        self.sync('claude')
+        target = self.root / '.claude/agents/gsd-executor.md'
+        self.inject_after_first_write(lambda: self.sync('claude', 'high'), lambda: target.write_bytes(b'local edit'))
+        self.assertEqual(target.read_bytes(), b'local edit')
+
+    def test_concurrent_edit_is_preserved_during_removal_replay(self):
+        self.interrupt_agent_removal()
+        target = self.root / self.retired
+        self.inject_after_first_write(lambda: config.recover(self.root), lambda: target.write_bytes(b'keep me'))
+        self.assertEqual(target.read_bytes(), b'keep me')
+
+    def test_concurrent_git_add_protects_agent_during_removal_replay(self):
+        self.git('init', '-q')
+        self.interrupt_agent_removal()
+        target = self.root / self.retired
+        previous = target.read_bytes()
+        self.inject_after_first_write(lambda: config.recover(self.root), lambda: self.git('add', '-f', self.retired))
+        self.assertEqual(target.read_bytes(), previous)
+        self.assertEqual(self.git('ls-files', self.retired).strip(), self.retired)
+
+    def test_concurrent_staging_preserved_during_migration(self):
+        self.git('init', '-q')
+        self.git('add', config.WORKING)
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture')
+        def stage():
+            self.put(self.working, {'edited': True})
+            self.git('add', config.WORKING)
+        self.inject_after_first_write(self.init, stage)
+        self.assertEqual(json.loads(self.git('show', ':' + config.WORKING)), {'edited': True})
+
+    def test_recover_visible_postimages_syncs_directories_before_removing_journal(self):
+        self.init()
+        journal = self.root / config.JOURNAL
+        unlink = Path.unlink
+        def interrupt(path, *args, **kwargs):
+            if path == journal:
+                raise OSError('interrupted with final target already visible')
+            return unlink(path, *args, **kwargs)
+        with mock.patch.object(Path, 'unlink', new=interrupt), self.assertRaises(OSError):
+            self.sync('claude')
+        synced = []
+        with mock.patch.object(config, 'atomic_write', side_effect=AssertionError('unexpected rewrite')), \
+                mock.patch.object(config, 'fsync_directory', side_effect=lambda p: synced.append((p, journal.exists()))):
+            config.recover(self.root)
+        for directory in (self.root, self.root / '.planning', self.root / '.claude', self.root / '.claude/agents'):
+            self.assertIn((directory, True), synced)
+        self.assertIn((self.root / '.planning', False), synced)
 
     def test_claude_preview_double_preparation_and_codex_preservation(self):
         self.git('init', '-q')
@@ -569,10 +653,10 @@ class ConfigTests(unittest.TestCase):
         w['new'] = 42
         self.put(self.working, w)
         original = config.atomic_write
-        def fail_working(path, content):
+        def fail_working(path, content, **kwargs):
             if path == self.working:
                 raise OSError('simulated interruption')
-            return original(path, content)
+            return original(path, content, **kwargs)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working):
             with self.assertRaises(OSError):
                 self.sync('codex', 'high')
@@ -586,10 +670,10 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.sync()
         original = config.atomic_write
-        def fail_working(path, content):
+        def fail_working(path, content, **kwargs):
             if path == self.working:
                 raise OSError('interruption')
-            return original(path, content)
+            return original(path, content, **kwargs)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working), self.assertRaises(OSError):
             self.sync('codex', 'high')
         self.put(self.working, {'external': True})

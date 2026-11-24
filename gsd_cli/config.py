@@ -107,12 +107,20 @@ def read_text(path: Path) -> str | None:
     return content.decode('utf-8', errors='surrogateescape') if content is not None else None
 
 
-def atomic_write(path: Path, content: str | bytes | None) -> None:
+def atomic_write(path: Path, content: str | bytes | None, *, before=MISSING, check=None) -> None:
     if isinstance(content, str):
         content = content.encode('utf-8', errors='surrogateescape')
-    if read_bytes(path) == content:
+    if before is MISSING and read_bytes(path) == content:
         return
+
+    def check_target():
+        if check:
+            check(path)
+        if before is not MISSING and read_bytes(path) != before:
+            raise ConfigError(f'{path} was edited externally; preserve edits and reconcile the journal')
+
     if content is None:
+        check_target()
         path.unlink()
         fsync_directory(path.parent)
         return
@@ -122,7 +130,17 @@ def atomic_write(path: Path, content: str | bytes | None) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(name, path)
+        check_target()
+        if before is None:
+            # Installing a new file must never replace one created after the
+            # preimage check. Linking the flushed temporary inode is exclusive.
+            try:
+                os.link(name, path)
+            except FileExistsError as exc:
+                raise ConfigError(f'{path} was created externally; preserve it and reconcile the journal') from exc
+            os.unlink(name)
+        else:
+            os.replace(name, path)
         fsync_directory(path.parent)
     finally:
         if os.path.exists(name):
@@ -381,6 +399,24 @@ def recover(root: Path) -> None:
 
 def apply_transaction(root: Path, entries: dict, version: int, untrack: bool, *,
                       resuming: bool, check_inputs=None) -> None:
+    agents = {name for name in entries if is_agent_path(name)}
+    index = None
+    if agents:
+        result = git(root, 'rev-parse', '--git-path', 'index')
+        index = root / (result.stdout.rstrip('\n') if result.returncode == 0 else '.git/index')
+        index_stamp = file_stamp(index)
+
+    def check_agent_target(path):
+        nonlocal index_stamp
+        try:
+            check_agent_path(path)
+            current = file_stamp(index)
+            if current != index_stamp:
+                check_untracked(root, agents)
+                index_stamp = current
+        except AgentError as exc:
+            raise ConfigError(str(exc)) from exc
+
     try:
         if version == 2:
             validate_agent_recovery(root, entries, resuming=resuming)
@@ -390,7 +426,7 @@ def apply_transaction(root: Path, entries: dict, version: int, untrack: bool, *,
     # postimages. Version one used Python's universal-newline text reads.
     pending = []
     for name, (before, after) in entries.items():
-        current = read_bytes(root / name)
+        raw = current = read_bytes(root / name)
         if version == 1 and current is not None:
             current = current.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
         if current == after and (resuming or before == after):
@@ -399,7 +435,7 @@ def apply_transaction(root: Path, entries: dict, version: int, untrack: bool, *,
             if not resuming:
                 raise ConfigError(f'{name} changed during preparation; retry')
             raise ConfigError(f'Cannot resume recovery: {name} was edited externally; preserve edits and reconcile the journal')
-        pending.append((name, after))
+        pending.append((name, raw, after))
     if untrack and git_tracked(root):
         check_staged(root)
     if not resuming:
@@ -410,19 +446,30 @@ def apply_transaction(root: Path, entries: dict, version: int, untrack: bool, *,
             check_inputs()
         if (root / JOURNAL).exists():
             raise ConfigError('Pending configuration journal; recover before starting a transaction')
-        atomic_write(root / JOURNAL, journal)
-    for name, after in pending:
+        atomic_write(root / JOURNAL, journal, before=None)
+    for name, before, after in pending:
         if is_agent_path(name):
             check_agent_path(root / name)
             for directory in (root / '.claude', root / '.claude/agents'):
                 if not directory.exists():
                     directory.mkdir()
                     fsync_directory(directory.parent)
-        atomic_write(root / name, after)
+        atomic_write(root / name, after, before=before, check=check_agent_target if name in agents else None)
     if untrack and git_tracked(root):
+        check_staged(root)
         result = git(root, 'rm', '--cached', '--', WORKING)
         if result.returncode:
             raise ConfigError(f'Cannot untrack config.json; recovery retained: {result.stderr.strip()}')
+    if resuming:
+        # A visible postimage may have survived an interruption between its
+        # rename/unlink and its directory fsync. Persist directory creation
+        # as well, even when every target already matched the journal.
+        parents = {(root / name).parent for name in entries}
+        if agents:
+            parents.update((root, root / '.claude'))
+        for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+            if parent.is_dir():
+                fsync_directory(parent)
     (root / JOURNAL).unlink()
     fsync_directory(root / '.planning')
 
@@ -520,6 +567,14 @@ def agent_git(root: Path) -> AgentGit | None:
     return AgentGit(*paths, global_exclude)
 
 
+def file_stamp(path: Path):
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
 def input_stamps(root: Path, runtime: str, installation: Path, repository: AgentGit | None) -> dict:
     paths = [root / name for name in (POLICY, DEFAULT, WORKING, STATE, LOCK, JOURNAL)]
     catalog = installation / 'bin/shared/model-catalog.json'
@@ -538,19 +593,12 @@ def input_stamps(root: Path, runtime: str, installation: Path, repository: Agent
             for current, dirs, files in os.walk(directory):
                 paths.extend(Path(current) / d for d in dirs)
                 paths.extend(Path(current) / f for f in files if f.endswith('.md'))
-    stamps = {}
     for path in paths:
         safe_path(path)
     if repository:
         paths.extend((repository.index, repository.exclude, repository.global_exclude))
         paths.extend(repository.ancestor_ignores(root))
-    for path in paths:
-        try:
-            st = path.stat()
-            stamps[path] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-        except FileNotFoundError:
-            stamps[path] = None
-    return stamps
+    return {path: file_stamp(path) for path in paths}
 
 
 @contextmanager
