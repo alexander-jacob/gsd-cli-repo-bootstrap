@@ -8,6 +8,7 @@ have not been assigned to a release in this document.
 | Status | Version | Release date |
 |---|---|---|
 | Unreleased | Not yet assigned | — |
+| Released | [3.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v3.0.0) | 2026-11-24 |
 | Released | [2.1.5](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.5) | 2026-11-16 |
 | Released | [2.1.4](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.4) | 2026-11-16 |
 | Released | [2.1.3](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.3) | 2026-11-16 |
@@ -17,7 +18,7 @@ have not been assigned to a release in this document.
 | Released | [2.0.1](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.1) | 2026-11-13 |
 | Released | [2.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.0.0) | 2026-11-13 |
 
-The current package version in `pyproject.toml` is `2.1.5`. Version 2.0.0 is the
+The current package version in `pyproject.toml` is `3.0.0`. Version 2.0.0 is the
 first release tracked here. Earlier release history has not been backfilled.
 
 When releasing, move the Unreleased entries into a versioned section with its
@@ -25,6 +26,8 @@ release date (`YYYY-MM-DD`), update the tracking table and package version as
 appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
+
+## [3.0.0](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v3.0.0) — 2026-11-24
 
 - Replace workflow/level launches with explicit `gsd-cli RUNTIME BLUEPRINT` selection. Policies and JSON output now use version 2. Existing project policies require [manual conversion](MIGRATION.md#convert-a-version-one-project-policy). Historical session reports remain readable.
 - Resolve phase and per-agent model and effort from the installed runtime catalog, share review settings across a runtime’s blueprints, and manage ignored Claude agent definitions in the project. Preview shows field sources, planned file actions and resolver evidence.

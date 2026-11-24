@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gsd-workflow-cli"
-version = "2.1.5"
+version = "3.0.0"
 description = "Project-owned runtime blueprints for GSD, Claude and Codex"
 requires-python = ">=3.10"
 dependencies = ["click>=8.1,<9", "pydantic>=2,<3"]
