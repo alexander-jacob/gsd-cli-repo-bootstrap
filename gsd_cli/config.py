@@ -6,6 +6,7 @@ import copy
 import fcntl
 import json
 import os
+import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -64,7 +65,11 @@ def reject_constant(name: str):
 def read_json(path: Path) -> dict:
     safe_path(path)
     try:
-        data = json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_constant)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r', encoding='utf-8') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError('expected a regular file')
+            data = json.load(handle, parse_constant=reject_constant)
     except (OSError, ValueError) as exc:
         raise ConfigError(f'Cannot read {path}: {exc}') from exc
     if not isinstance(data, dict):

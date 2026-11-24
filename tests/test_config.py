@@ -2,7 +2,9 @@
 import copy
 import fcntl
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -434,6 +436,28 @@ class ConfigTests(unittest.TestCase):
         self.put(self.working, {'model_overrides': {'gsd-found': 'old', 'gsd-unknown': 'keep'}})
         self.init()
         self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-unknown': 'keep'})
+
+    def test_fifo_catalog_is_optional_for_init_and_rejected_for_preparation(self):
+        catalog = self.root / '.codex/gsd-core/bin/shared/model-catalog.json'
+        catalog.parent.mkdir(parents=True)
+        os.mkfifo(catalog)
+        script = """
+import sys
+from pathlib import Path
+from gsd_cli import config
+from gsd_cli.resolver import load_catalog
+root = Path(sys.argv[1])
+config.initialize(root)
+try:
+    load_catalog(root / '.codex/gsd-core')
+except config.ConfigError as exc:
+    print(exc)
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(self.root)],
+                                capture_output=True, text=True, timeout=3, check=True)
+        self.assertTrue(self.policy_file.exists())
+        self.assertIn(str(catalog), result.stdout)
+        self.assertIn('regular file', result.stdout)
 
     def test_provisional_entry_conflicts_on_edit_or_missing_metadata(self):
         self.put(self.working, {'model_overrides': {'gsd-addition': 'seed'}})
