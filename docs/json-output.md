@@ -1,120 +1,31 @@
 # Machine-readable output
 
-Every inspection command can print one JSON document instead of text, so scripts,
-editors and agent skills never have to parse prose. Add `--json` before the first
-`--`; after it, `--json` is an ordinary child argument.
+Use `--json` before the first `--`. Each inspection writes one JSON document to stdout. Every envelope carries integer `schema_version: 2`, a command name, `ok`, `data`, and `error`. Inspect both the exit code and the payload. A failed check or incomplete preview can return useful data with its error. Paths below are normalized from a temporary project using fixture GSD bundles.
 
 ```sh
 gsd-cli status --json
-gsd-cli check [claude|codex] --json
+gsd-cli check codex --json
 gsd-cli policy --json
-gsd-cli plan claude --config --json
-gsd-cli sessions [claude|codex] [--pick [N]] --json
-gsd-cli schema [NAME]
+gsd-cli claude medium --secure --config --json
+gsd-cli sessions codex --json
+gsd-cli schema preview
 ```
 
-The examples below were captured from the tool in a throwaway project, with
-absolute paths replaced by `/home/user/...` and long arrays trimmed. The preview
-example used a stand-in GSD resolver, which is why its model differs from the
-configured expectation.
+## Check
 
-## The envelope
-
-JSON mode prints exactly one JSON object and a trailing newline to stdout, with
-two-space indentation and ASCII-only escapes:
+A successful fixture-backed `gsd-cli check codex --json` produced this envelope.
 
 ```json
 {
-  "schema_version": 1,
-  "command": "check",
-  "ok": false,
-  "data": { },
-  "error": { "kind": "requirements", "message": "..." }
-}
-```
-
-| Field | Meaning |
-|---|---|
-| `schema_version` | Integer `1`. Bumped only for incompatible changes. |
-| `command` | `status`, `check`, `policy`, `sessions` or `preview` (a workflow with `--config`). `null` when the invocation maps to none of them, for example `init --json`. |
-| `ok` | `true` exactly when the exit code is 0. The exit code is the one the same invocation produces in text mode. |
-| `data` | The command payload, or `null` when none could be produced. |
-| `error` | `null` on success, otherwise `{kind, message}`. `data` and `error` can both be present: a failed check still reports its results. |
-
-`--help` keeps printing help text with exit 0, with or without `--json`.
-
-### Error kinds
-
-| `error.kind` | Meaning |
-|---|---|
-| `usage` | Bad arguments or options, including `sessions` errors such as `--pick 9` for a missing session (exit 1) and Click usage errors (exit 2). |
-| `config` | Project discovery, a missing `gsd-cli.config.json`, working-config conflicts, pending recovery or a held lock. Also a value from the working config or a session log that the output schema cannot represent (exit 1). |
-| `policy` | `gsd-cli.config.json` is invalid; the message starts with the offending path. |
-| `version` | A GSD version or `gsd.min_version` value could not be parsed. |
-| `os` | A file or process error. |
-| `requirements` | A `check` failed. `data` still lists every result. |
-| `incomplete` | A configuration preview could not collect all resolver evidence. `data` is still complete for what was found. |
-
-Message wording is not part of the contract; branch on `kind`, `reason`, `code`
-and `severity`.
-
-## status
-
-```sh
-gsd-cli status --json
-```
-
-Payload: `project`, `source` (the working config file), `pending_recovery` and
-`config` (the saved working configuration).
-
-```json
-{
-  "schema_version": 1,
-  "command": "status",
-  "ok": true,
-  "data": {
-    "project": "/home/user/project",
-    "source": "/home/user/project/.planning/config.json",
-    "pending_recovery": false,
-    "config": {
-      "runtime": "claude"
-    }
-  },
-  "error": null
-}
-```
-
-## check
-
-```sh
-gsd-cli check [claude|codex] --json
-```
-
-Payload: `minimum` and `results`, one entry per runtime checked. Each entry has
-`runtime`, `directory`, `installed` (`null` when unreadable), `minimum`, `ok`,
-`reason` and a human `message`. Any failing entry gives exit 1 and error kind
-`requirements`.
-
-```json
-{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "check",
   "ok": true,
   "data": {
     "minimum": "1.21.0",
     "results": [
-      {
-        "runtime": "claude",
-        "directory": "/home/user/.claude/gsd-core",
-        "installed": "1.21.0",
-        "minimum": "1.21.0",
-        "ok": true,
-        "reason": "ok",
-        "message": "meets the project minimum"
-      },
       {
         "runtime": "codex",
-        "directory": "/home/user/.codex/gsd-core",
+        "directory": "/tmp/example/home/.codex/gsd-core",
         "installed": "1.21.0",
         "minimum": "1.21.0",
         "ok": true,
@@ -127,225 +38,58 @@ Payload: `minimum` and `results`, one entry per runtime checked. Each entry has
 }
 ```
 
-Failing example (`claude` installed below the minimum):
+Each result's `reason` is `ok`, `below_minimum`, or `unverifiable`. Omit the runtime to inspect both. Any failed requirement sets `ok` to false and returns exit 1.
+
+## Status and policy
+
+Status returns `project`, `source`, `pending_recovery` and the saved `config`. Policy returns `project`, `path`, the complete validated `policy`, and paths in `differs_from_shipped`. The packaged starter serves as a comparison. Runtime launch decisions come from the project policy.
+
+## Preview
+
+`gsd-cli RUNTIME BLUEPRINT --config --json` reports the selected runtime and blueprint, requested session and reviewer settings, the selected installation, per-role evidence, GSD context, prospective config, pending capture and diagnostics. `--details` selects the text view and cannot be combined with JSON.
+
+For example, the fixture-backed Claude command above reports this `data.session` object.
 
 ```json
 {
-  "schema_version": 1,
-  "command": "check",
-  "ok": false,
-  "data": {
-    "minimum": "1.21.0",
-    "results": [
-      {
-        "runtime": "claude",
-        "directory": "/home/user/.claude/gsd-core",
-        "installed": "1.20.0",
-        "minimum": "1.21.0",
-        "ok": false,
-        "reason": "below_minimum",
-        "message": "below the project minimum"
-      }
-    ]
+  "model": "claude-opus-5-5",
+  "effort": "medium",
+  "permissions": "normal",
+  "argv": [
+    "claude",
+    "--model",
+    "claude-opus-5-5",
+    "--effort",
+    "medium"
+  ],
+  "forwarded": []
+}
+```
+
+For the executor, the following projection shows the source of both requested values and the prospective file action. The complete agent object also contains raw `resolved` GSD fields, `check` and `findings`.
+
+```json
+{
+  "agent": "gsd-executor",
+  "phase": "execution",
+  "covered": true,
+  "project_definition": {
+    "source": "/tmp/example/home/.claude/agents/gsd-executor.md",
+    "destination": ".claude/agents/gsd-executor.md",
+    "action": "create",
+    "model": "opus",
+    "effort": "medium"
   },
-  "error": {
-    "kind": "requirements",
-    "message": "GSD requirements not met. Update or repair the reported installation, then rerun gsd-cli check."
+  "expected": {
+    "model": "opus",
+    "effort": "medium",
+    "model_source": "runtimes.claude.blueprints.medium.phases.execution.model",
+    "effort_source": "runtimes.claude.blueprints.medium.phases.execution.effort"
   }
 }
 ```
 
-`reason` values:
-
-| `reason` | Meaning |
-|---|---|
-| `ok` | The installation meets the project minimum. |
-| `below_minimum` | The installed version is older than `gsd.min_version`. |
-| `unverifiable` | `VERSION` is unreadable or malformed, or the bundle is incomplete. |
-
-## policy
-
-```sh
-gsd-cli policy [--json]
-```
-
-Reads and validates `gsd-cli.config.json`. Without `--json` it prints one line
-naming the validated file. Payload: `project`, `path`, `policy` (the complete
-project policy) and `differs_from_shipped`, the dotted paths where the project
-policy differs from the shipped starter policy. It shows local customizations
-and reveals when the starter has moved on, for example a raised
-`gsd.min_version`. An invalid policy gives `ok: false`, `data: null` and error
-kind `policy`.
-
-The `policy` object below is trimmed to a few keys.
-
-```json
-{
-  "schema_version": 1,
-  "command": "policy",
-  "ok": true,
-  "data": {
-    "project": "/home/user/project",
-    "path": "/home/user/project/gsd-cli.config.json",
-    "policy": {
-      "schema_version": 1,
-      "gsd": {
-        "min_version": "1.21.0"
-      },
-      "runtimes": {
-        "claude": {
-          "medium": {
-            "session_model": "claude-opus-5-5",
-            "agent_model": "opus",
-            "session_effort": "medium"
-          }
-        }
-      }
-    },
-    "differs_from_shipped": []
-  },
-  "error": null
-}
-```
-
-## preview (`WORKFLOW RUNTIME --config --json`)
-
-```sh
-gsd-cli plan claude medium --config --json
-```
-
-`--json` on a workflow requires `--config`; otherwise it is a usage error and
-nothing launches. It is exclusive with `--details`, because JSON is always
-complete: it carries everything `--details` prints.
-
-Payload fields:
-
-- `project`, `workflow`, `runtime`, `level`, `complete`.
-- `session`: requested `model`, `effort`, `permissions` (`bypass` or `normal`,
-  after `--secure` is applied), `argv` and `forwarded` arguments.
-- `reviewers`: the selected reviewer group, each `{name, cli, model, effort}`.
-- `installation`: the selected GSD installation, shaped like a `check` entry.
-- `agents`: every registered or configured agent. `in_workflow` marks those the
-  compact text report would show; `phase` is `"unknown"` without catalog
-  metadata. `expected` holds the configured `model` and `effort` with their
-  sources. `resolved` is the installed GSD resolver's row, passed through
-  unchanged (or `null`); it can gain keys with new GSD releases. `check` is
-  `ok`, `mismatch` or `unknown`. `findings` are coded comparison results.
-- `gsd_context`: the loader's config source, active workstream and the paths
-  where GSD's loaded config differs from the launcher's; `null` when inspection
-  did not get that far.
-- `pending_capture`, `diagnostics` and `config` (the prospective effective
-  configuration).
-
-An incomplete inspection gives exit 1, `ok: false`, the full `data` and error
-kind `incomplete`. In the example, `agents` and `config` are trimmed to one agent
-and one key, and `reviewers` to one reviewer.
-
-```json
-{
-  "schema_version": 1,
-  "command": "preview",
-  "ok": true,
-  "data": {
-    "project": "/home/user/project",
-    "workflow": "plan",
-    "runtime": "claude",
-    "level": "medium",
-    "complete": true,
-    "session": {
-      "model": "claude-opus-5-5",
-      "effort": "medium",
-      "permissions": "normal",
-      "argv": [
-        "claude",
-        "--model",
-        "claude-opus-5-5",
-        "--effort",
-        "medium"
-      ],
-      "forwarded": []
-    },
-    "reviewers": [
-      {
-        "name": "astra-review",
-        "cli": "codex",
-        "model": "gpt-6-astra",
-        "effort": "high"
-      }
-    ],
-    "installation": {
-      "runtime": "claude",
-      "directory": "/home/user/.claude/gsd-core",
-      "installed": "1.21.0",
-      "minimum": "1.21.0",
-      "ok": true,
-      "reason": "ok",
-      "message": "meets the project minimum"
-    },
-    "agents": [
-      {
-        "agent": "gsd-planner",
-        "phase": "planning",
-        "in_workflow": true,
-        "expected": {
-          "model": "opus",
-          "effort": "high",
-          "model_source": "models.planning=sonnet",
-          "effort_source": "effort.agent_overrides.gsd-planner"
-        },
-        "resolved": {
-          "model": "fixture-model",
-          "profile": "balanced",
-          "effort": "high",
-          "effort_effective": "high",
-          "effort_effective_source": "resolved",
-          "effort_propagation": "spawn",
-          "effort_param": "reasoning_effort",
-          "effort_rendered": "high",
-          "effort_clamped": false,
-          "fast_mode": false,
-          "fast_mode_supported": false,
-          "effort_requested": "high",
-          "effort_clamp_reason": null,
-          "host": "claude",
-          "effort_surface": "spawn",
-          "effort_argv": [],
-          "effort_argv_string": "",
-          "effort_argv_value": "high"
-        },
-        "check": "mismatch",
-        "findings": [
-          {
-            "code": "model_mismatch",
-            "severity": "mismatch",
-            "message": "model expected opus, resolved fixture-model"
-          },
-          {
-            "code": "installed_effort_unknown",
-            "severity": "unknown",
-            "message": "installed Claude effort unknown; resolver supplied no file evidence"
-          }
-        ]
-      }
-    ],
-    "gsd_context": {
-      "source": "root",
-      "workstream": "",
-      "loader_differences": [
-        "runtime"
-      ]
-    },
-    "pending_capture": [],
-    "diagnostics": [],
-    "config": {
-      "workflow": {
-        "compact_content": true
-      }
-    }
-  },
-  "error": null
-}
-```
+A project definition can be created, updated, unchanged, removed or forgotten. Codex rows have a null `project_definition`. The row’s `check` is `mismatch` if any known mismatch exists, otherwise `unknown` if evidence is missing, otherwise `ok`. A complete comparison exits 0 even if a row reports a difference. An unavailable installation or catalog can produce an incomplete preview with session/reviewer settings, no agent rows and a null effective config. Later resolver failures retain the configuration already calculated.
 
 ### Finding codes
 
@@ -355,6 +99,8 @@ and one key, and `reviewers` to one reviewer.
 | `effort_mismatch` | `mismatch` | The resolved effort differs from the configured one. |
 | `effort_clamped` | `mismatch` | The runtime clamped the requested effort. |
 | `installed_effort_mismatch` | `mismatch` | Effort drift: Claude's installed agent frontmatter effort differs from the configured effort. |
+| `installed_effort_differs` | `note` | Installed Claude frontmatter differs from the proposed project definition. |
+| `project_effort_unverified` | `unknown` | Actual Claude effort for the project definition is unobserved. |
 | `model_unknown` | `unknown` | The model expectation or the resolution is missing. |
 | `effort_unknown` | `unknown` | The effort expectation or the resolution is missing. |
 | `forwarded_may_override` | `unknown` | Forwarded child arguments may override inherited session effort. |
@@ -364,10 +110,6 @@ and one key, and `reviewers` to one reviewer.
 | `unregistered_agent` | `unknown` | The agent is not in the installed GSD catalog. |
 | `alias_equivalent` | `note` | A Claude model alias was confirmed equivalent by the installed catalog. |
 | `inherits_session_effort` | `note` | The installed agent inherits the session effort. |
-
-An agent's `check` is `mismatch` when any finding is a mismatch, otherwise
-`unknown` when any is unknown, otherwise `ok`. Findings are ordered mismatches,
-unknowns, notes.
 
 ## sessions
 
@@ -400,64 +142,39 @@ only its own comparisons. `resolver_available` is `false`, and the text command
 prints its "profile comparison skipped" note, only when no checked runtime was
 usable.
 
+The `launch.blueprint` field identifies new launches. Older records may carry `workflow`, `level` or `profile`. Reviewer comparison uses captured review settings when available. If several active reviewers share an adapter, the report can compare adapter effort without guessing the instance-specific model.
+
+## Errors
+
+For example, `gsd-cli init --json` emits this usage error. An invocation with no JSON command has a null `command`.
+
 ```json
 {
-  "schema_version": 1,
-  "command": "sessions",
-  "ok": true,
-  "data": {
-    "project": "/home/user/project",
-    "resolver_available": true,
-    "sessions": [
-      {
-        "runtime": "claude",
-        "run_id": "s1",
-        "kind": "session",
-        "cwd": "/home/user/project",
-        "start": "2026-10-01T09:00:00Z",
-        "end": "2026-10-01T09:02:00Z",
-        "model": "claude-opus-5-5",
-        "effort": "medium",
-        "effort_varied": false,
-        "advisor": null,
-        "agent_type": null,
-        "requested_model": null,
-        "requested_effort": null,
-        "resumed": false,
-        "cleared": false,
-        "marks": [],
-        "mismatch": false,
-        "launch": null,
-        "children": [
-          {
-            "runtime": "claude",
-            "run_id": "a1",
-            "kind": "agent",
-            "cwd": "/home/user/project",
-            "start": "2026-10-01T09:01:30Z",
-            "end": "2026-10-01T09:01:40Z",
-            "model": "claude-sonnet-5-5",
-            "effort": "high",
-            "effort_varied": false,
-            "advisor": null,
-            "agent_type": "gsd-executor",
-            "requested_model": "sonnet",
-            "requested_effort": null,
-            "resumed": false,
-            "cleared": false,
-            "marks": [],
-            "mismatch": false,
-            "launch": null,
-            "children": []
-          }
-        ]
-      }
-    ],
-    "older": []
-  },
-  "error": null
+  "schema_version": 2,
+  "command": null,
+  "ok": false,
+  "data": null,
+  "error": {
+    "kind": "usage",
+    "message": "No such option '--json'."
+  }
 }
 ```
+
+### Error kinds
+
+| `error.kind` | Meaning |
+|---|---|
+| `usage` | Bad arguments or options, including `sessions` errors such as `--pick 9` for a missing session (exit 1) and Click usage errors (exit 2). |
+| `config` | Project discovery, a missing `gsd-cli.config.json`, working-config conflicts, pending recovery or a held lock. Also a value from the working config or a session log that the output schema cannot represent (exit 1). |
+| `policy` | `gsd-cli.config.json` is invalid; the message starts with the offending path. |
+| `version` | A GSD version or `gsd.min_version` value could not be parsed. |
+| `os` | A file or process error. |
+| `requirements` | A `check` failed. `data` still lists every result. |
+| `incomplete` | A configuration preview could not collect all resolver evidence. `data` is still complete for what was found. |
+
+Message wording is not part of the contract; branch on `kind`, `reason`, `code`
+and `severity`.
 
 ## schema
 
@@ -484,7 +201,7 @@ gsd-cli schema policy-file > gsd-cli.config.schema.json
 Map that file to `gsd-cli.config.json`. The policy file itself must not contain
 `$schema`: policy validation rejects unknown top-level keys. The schema covers
 structure and allowed values; `gsd-cli policy` stays the validator and also
-checks cross-references such as reviewer groups and workflow names.
+checks cross-references such as reviewer names in each runtime roster.
 
 ## Guarantees
 
@@ -496,7 +213,7 @@ checks cross-references such as reviewer groups and workflow names.
   then exits 1 with error kind `config` instead of printing a traceback.
 - **Only stdout.** JSON mode writes nothing to stderr beyond what a child
   process cannot be prevented from emitting.
-- **Compatibility.** Within `schema_version` 1, fields may be added; consumers
+- **Compatibility.** Within `schema_version` 2, fields may be added; consumers
   must ignore fields they do not know. Removing or retyping a field, or
   changing its meaning, bumps `schema_version`. The published schemas set
   `additionalProperties: false`, so a consumer that validates output should

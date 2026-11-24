@@ -26,6 +26,10 @@ appropriate, and retain an empty Unreleased section for subsequent changes.
 
 ## Unreleased
 
+- Replace workflow/level launches with explicit `gsd-cli RUNTIME BLUEPRINT` selection. Policies and JSON output now use version 2. Existing project policies require [manual conversion](MIGRATION.md#convert-a-version-one-project-policy). Historical session reports remain readable.
+- Resolve phase and per-agent model and effort from the installed runtime catalog, share review settings across a runtime’s blueprints, and manage ignored Claude agent definitions in the project. Preview shows field sources, planned file actions and resolver evidence.
+- Launch either runtime with full permission bypass by default. Pass `--secure` for the runtime’s normal permissions.
+
 ## [2.1.5](https://github.com/alexander-jacob/gsd-cli-repo-bootstrap/releases/tag/v2.1.5) — 2026-11-16
 
 ### Fixed

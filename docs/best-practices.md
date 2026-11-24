@@ -14,11 +14,10 @@ configuration lock protects preparation, not the entire AI session.
 
 Start with medium for routine execution and use high for demanding planning or
 verification. Measure results before changing the whole project. Prefer named
-agent pins when only one job needs a different level.
+agent overrides when only one role needs a different model or effort.
 
 Changing session effort does not change every agent or reviewer. Check all three
-controls. Claude installed effort frontmatter needs separate attention; the
-launcher never silently updates global agent definitions.
+controls. For Claude, inspect the proposed project definition and the resolver’s installed frontmatter evidence in the preview.
 
 ## Preview before launching
 
@@ -29,8 +28,7 @@ runs to compare intent with available execution evidence.
 
 ## Select reviewers deliberately
 
-Choose the group for the plan being reviewed rather than assuming the selected
-runtime identifies its author. Keep reviewers independent of the launch level.
+Set each runtime’s reviewer roster deliberately. It applies across its blueprints and stays independent of plan authorship.
 Enable DeepSeek or parallel reviews only when they serve the task; OpenRouter
 reviewers incur usage charges. Gemini Carbon can spend more reasoning tokens
 than Argon, so assess review value as well as model capability.
@@ -38,11 +36,11 @@ than Argon, so assess review value as well as model capability.
 ## Choose permission behavior explicitly
 
 Use `--secure` when you want normal CLI permission settings. Remember that the
-shipped execution presets and Codex planning bypass prompts by default. Check
+launcher bypasses approval prompts by default on both runtimes. Check
 forwarded arguments, because they may override models, effort or permissions.
 
 ```sh
-gsd-cli exec codex medium --secure -- --resume
+gsd-cli codex medium --secure -- --help
 ```
 
 The first `--` starts child arguments. Put launcher inspection flags before it.
