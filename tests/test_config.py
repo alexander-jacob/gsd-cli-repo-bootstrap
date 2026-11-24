@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 from gsd_cli import config
-from gsd_cli.policy import load_default, resolve
+from gsd_cli.policy import PolicyError, load_default, resolve
+from resolver_fixtures import AGENT_PHASES
 
 
 class MergeTests(unittest.TestCase):
@@ -86,6 +87,13 @@ class ConfigTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.environment = mock.patch.dict('os.environ', {
+            'HOME': str(self.root), 'CODEX_HOME': str(self.root / '.codex'),
+            'CLAUDE_CONFIG_DIR': str(self.root / '.claude'),
+        })
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.catalog = {'agents': {name: {'phaseType': phase} for name, phase in AGENT_PHASES.items()}}
         (self.root / '.planning').mkdir()
         self.working = self.root / '.planning/config.json'
         self.default = self.root / '.planning/config.default.json'
@@ -103,13 +111,13 @@ class ConfigTests(unittest.TestCase):
         config.initialize(self.root)
         self.policy = self.get(self.policy_file)
 
-    def sync(self, workflow='plan', runtime='codex', level='medium'):
+    def sync(self, runtime='codex', blueprint='medium', catalog=None):
         self.put(self.policy_file, self.policy)
-        return config.synchronize(self.root, self.policy, resolve(self.policy, workflow, runtime, level))
+        return config.synchronize(self.root, self.policy, resolve(self.policy, runtime, blueprint, catalog or self.catalog))
 
     def preview(self):
         self.assertTrue(hasattr(config, 'preview'), 'read-only preview is not implemented')
-        return config.preview(self.root, self.policy, resolve(self.policy, 'plan', 'codex', 'medium'))
+        return config.preview(self.root, self.policy, resolve(self.policy, 'codex', 'medium', self.catalog))
 
     def file_snapshot(self):
         return {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
@@ -188,7 +196,7 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.assertEqual(self.working.read_bytes(), before)
         self.assertNotIn('_auto_chain_active', self.get(self.default)['workflow'])
-        self.policy['runtimes']['codex']['medium']['session_model'] = 'project-model'
+        self.policy['runtimes']['codex']['blueprints']['medium']['session']['model'] = 'project-model'
         self.put(self.policy_file, self.policy)
         config.initialize(self.root)
         self.assertEqual(self.get(self.policy_file), self.policy)
@@ -197,7 +205,7 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.sync()
         before = self.default.read_bytes()
-        self.sync('exec', 'claude', 'high')
+        self.sync('claude', 'high')
         self.assertEqual(self.default.read_bytes(), before)
         working = self.get(self.working)
         working['custom']['keep'] = False
@@ -239,8 +247,11 @@ class ConfigTests(unittest.TestCase):
         w = self.get(self.working)
         w['model_overrides']['custom-agent'] = 'custom-model'
         self.put(self.working, w)
-        del self.policy['agent_levels']['gsd-doc-classifier']
-        del self.policy['reviewers']['deepseek-review']
+        section = self.policy['runtimes']['codex']
+        del section['blueprints']['medium']['agents']['gsd-doc-classifier']
+        self.catalog['agents']['gsd-doc-classifier']['phaseType'] = 'unknown'
+        del section['review']['reviewer_instances']['deepseek-review']
+        section['review']['default_reviewers'] = []
         data, _ = self.sync()
         self.assertNotIn('gsd-doc-classifier', data['model_overrides'])
         self.assertNotIn('deepseek-review', data['review']['reviewer_instances'])
@@ -266,9 +277,9 @@ class ConfigTests(unittest.TestCase):
         self.default.unlink()
         with self.assertRaisesRegex(config.ConfigError, 'config.default.json'):
             self.sync()
-        d['models'] = {'execution': 'opus'}
+        d['model_overrides'] = {'gsd-executor': 'opus'}
         self.put(self.default, d)
-        with self.assertRaisesRegex(config.ConfigError, 'models.execution'):
+        with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-executor'):
             self.sync()
 
     def test_boolean_default_edit_survives_complete_sync(self):
@@ -306,9 +317,9 @@ class ConfigTests(unittest.TestCase):
             return original(path, content)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working):
             with self.assertRaises(OSError):
-                self.sync('exec')
+                self.sync('codex', 'high')
         self.assertTrue((self.root / '.planning/.gsd-cli-journal.json').exists())
-        self.sync('exec')
+        self.sync('codex', 'high')
         self.assertEqual(self.get(self.default)['new'], 42)
         self.assertFalse((self.root / '.planning/.gsd-cli-journal.json').exists())
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
@@ -322,7 +333,7 @@ class ConfigTests(unittest.TestCase):
                 raise OSError('interruption')
             return original(path, content)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working), self.assertRaises(OSError):
-            self.sync('exec')
+            self.sync('codex', 'high')
         self.put(self.working, {'external': True})
         with self.assertRaisesRegex(config.ConfigError, 'recovery'):
             self.sync()
@@ -368,15 +379,86 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(self.policy_file.exists())
         self.assertEqual(self.working.read_bytes(), before)
 
-    def test_legacy_policy_migration_preserves_models_and_custom_reviewers(self):
+    def test_starter_and_existing_unmanaged_reviewers(self):
         w = self.get(self.working)
-        w['model_policy'] = {'runtime_tiers': {'codex': {'sonnet': {'model': 'custom-sol', 'reasoning_effort': 'high'}}}}
-        w['review'] = {'reviewer_instances': {'mine': {'cli': 'codex', 'model': 'custom-review'}}, 'parallel_lanes': True}
+        w['model_policy'] = {'runtime_tiers': {'codex': {'sonnet': {'model': 'custom-sol'}}}}
+        w['review'] = {'reviewer_instances': {'mine': {'cli': 'codex', 'model': 'custom-review'}}}
         self.put(self.working, w)
         self.init()
-        self.assertEqual(self.policy['runtimes']['codex']['medium']['agent_model'], 'custom-sol')
-        self.assertEqual(self.policy['reviewers']['mine']['model'], 'custom-review')
-        self.assertTrue(self.policy['workflows']['exec']['parallel_reviews'])
+        self.assertEqual(self.policy, load_default())
+        self.assertEqual(self.policy['schema_version'], 2)
+        self.assertEqual(self.get(self.default)['review'], w['review'])
+        data, _ = self.sync()
+        self.assertNotIn('model_policy', data)
+        self.assertEqual(data['review']['reviewer_instances']['mine'], w['review']['reviewer_instances']['mine'])
+
+    def test_manual_policy_conversion_uses_existing_version_one_metadata(self):
+        self.init()
+        self.put(self.policy_file, {'schema_version': 1})
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(PolicyError, 'manually convert'):
+            config.initialize(self.root)
+        self.assertEqual(self.file_snapshot(), before)
+        state = self.get(self.state)
+        state['managed'] = [['models', 'execution'], ['model_overrides', 'gsd-retired']]
+        self.put(self.state, state)
+        working = self.get(self.working)
+        working['models'] = {'execution': 'old', 'custom': 'keep'}
+        working['model_overrides'] = {'gsd-retired': 'old'}
+        self.put(self.working, working)
+        self.put(self.policy_file, self.policy)
+        self.init()
+        data, _ = self.sync()
+        self.assertEqual(data['models'], {'custom': 'keep'})
+        self.assertNotIn('gsd-retired', data['model_overrides'])
+
+    def test_switching_catalogs_retires_only_known_seed_values(self):
+        original = {'model_overrides': {'gsd-only-codex': 'one', 'gsd-only-claude': 'two', 'gsd-custom': 'keep'}}
+        self.put(self.working, original)
+        self.init()
+        self.assertEqual(self.get(self.default)['model_overrides'], original['model_overrides'])
+        codex, claude = copy.deepcopy(self.catalog), copy.deepcopy(self.catalog)
+        codex['agents']['gsd-only-codex'] = {'phaseType': 'planning'}
+        claude['agents']['gsd-only-claude'] = {'phaseType': 'research'}
+        self.sync('codex', catalog=codex)
+        data, _ = self.sync('claude', catalog=claude)
+        self.assertNotIn('gsd-only-codex', data['model_overrides'])
+        self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-custom': 'keep'})
+        self.assertEqual(data['model_overrides']['gsd-custom'], 'keep')
+
+    def test_available_catalog_classifies_covered_roles_at_init(self):
+        catalog = self.root / '.codex/gsd-core/bin/shared/model-catalog.json'
+        catalog.parent.mkdir(parents=True)
+        self.put(catalog, {'agents': {'gsd-found': {'phaseType': 'verification'},
+                                      'gsd-unknown': {'phaseType': 'other'}}})
+        self.put(self.working, {'model_overrides': {'gsd-found': 'old', 'gsd-unknown': 'keep'}})
+        self.init()
+        self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-unknown': 'keep'})
+
+    def test_provisional_entry_conflicts_on_edit_or_missing_metadata(self):
+        self.put(self.working, {'model_overrides': {'gsd-addition': 'seed'}})
+        self.init()
+        self.catalog['agents']['gsd-addition'] = {'phaseType': 'planning'}
+        for edited in (self.default, self.working):
+            with self.subTest(edited=edited):
+                original = edited.read_bytes()
+                data = self.get(edited)
+                data['model_overrides']['gsd-addition'] = 'edited'
+                self.put(edited, data)
+                with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-addition'):
+                    self.preview()
+                edited.write_bytes(original)
+        self.working.unlink()
+        state = self.state.read_bytes()
+        self.state.unlink()
+        with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-addition'):
+            self.preview()
+        self.state.write_bytes(state)
+        defaults = self.get(self.default)
+        del defaults['model_overrides']['gsd-addition']
+        self.put(self.default, defaults)
+        self.sync()
+        self.assertNotIn('provisional', self.get(self.state))
 
     def test_nested_ignore_exception_allows_init(self):
         self.git('init', '-q')

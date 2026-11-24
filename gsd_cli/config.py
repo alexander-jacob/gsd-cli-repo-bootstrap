@@ -11,7 +11,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from .policy import PHASES, RUNTIMES, TIERS, TRANSIENT, load_default, resolve, validate
+from .policy import PHASES, RUNTIMES, TRANSIENT, is_agent_name, load_default, validate
+from .versions import installation_dir
 
 POLICY = 'gsd-cli.config.json'
 WORKING = '.planning/config.json'
@@ -210,6 +211,15 @@ def load_state(root: Path):
     for path in state['managed']:
         if not isinstance(path, list) or not path or any(not isinstance(k, str) or not k for k in path) or not valid_owned(tuple(path)):
             raise ConfigError('Invalid managed path in synchronization metadata')
+    provisional = state.get('provisional', [])
+    if not isinstance(provisional, list):
+        raise ConfigError('Invalid provisional entries in synchronization metadata')
+    for entry in provisional:
+        path = entry.get('path') if isinstance(entry, dict) else None
+        if (not isinstance(path, list) or not path or not is_agent_name(path[-1])
+                or path[:-1] not in (['model_overrides'], ['effort', 'agent_overrides'])
+                or 'seed' not in entry):
+            raise ConfigError('Invalid provisional agent path in synchronization metadata')
     return state
 
 
@@ -225,7 +235,8 @@ def changed_paths(before, after, prefix=()) -> list[str]:
 def reject_owned(default: dict, paths) -> None:
     found = ['.'.join(p) for p in sorted(paths) if get_path(default, p) is not MISSING]
     if found:
-        raise ConfigError('config.default.json contains managed/transient settings: ' + ', '.join(found))
+        raise ConfigError('config.default.json contains managed/transient settings: ' + ', '.join(found)
+                          + '; reconcile these paths in the shared defaults before retrying')
     # Detect a scalar replacing a container even when no leaf exists.
     project(default, paths)
 
@@ -287,6 +298,23 @@ def prepare(default: dict, working: dict | None, state: dict | None,
     current = managed_paths(resolved)
     previous = {tuple(p) for p in state['managed']} if state else set()
     excluded = current | previous | set(TRANSIENT)
+    # Init may predate the selected runtime's catalog. Release only leaves
+    # copied from the old working config, with their original values intact.
+    original_default = default
+    default = copy.deepcopy(default)
+    provisional = []
+    for entry in (state or {}).get('provisional', []):
+        path = tuple(entry['path'])
+        if path not in current:
+            provisional.append(entry)
+            continue
+        sources = [get_path(source, path) for source in (default, working) if source is not None]
+        if all(value is MISSING for value in sources):
+            continue
+        if any(not json_equal(value, entry['seed']) for value in sources):
+            raise ConfigError(f'Configuration conflict at {".".join(path)}; remove the edited seed '
+                              'from config.json and config.default.json to accept blueprint management')
+        remove_path(default, path)
     reject_owned(default, excluded)
     local = project(working, excluded) if working is not None else default
     if state is None:
@@ -305,7 +333,9 @@ def prepare(default: dict, working: dict | None, state: dict | None,
     for path, value in resolved['values'].items():
         put_path(data, path, value)
     metadata = {'version': 1, 'baseline': merged, 'managed': sorted(current)}
-    return data, merged, metadata, changed_paths(default, merged)
+    if provisional:
+        metadata['provisional'] = provisional
+    return data, merged, metadata, changed_paths(original_default, merged)
 
 
 def input_stamps(root: Path) -> dict:
@@ -369,36 +399,41 @@ def synchronize(root: Path, policy: dict, resolved: dict) -> tuple[dict, list[st
         return data, captured
 
 
-def seed_policy(working: dict) -> dict:
-    policy = load_default()
-    tiers = working.get('model_policy', {}).get('runtime_tiers', {})
-    for runtime in RUNTIMES:
-        for level, tier in TIERS.items():
-            old = tiers.get(runtime, {}).get(tier)
-            if old:
-                entry = policy['runtimes'][runtime][level]
-                entry['agent_model'] = old['model']
-                if runtime == 'codex':
-                    entry['session_model'] = old['model']
-                    if 'reasoning_effort' in old:
-                        entry['session_effort'] = old['reasoning_effort']
-    for agent, model in working.get('model_overrides', {}).items():
-        if agent in policy['agent_levels']:
-            matches = {level for rt in policy['runtimes'].values() for level, entry in rt.items() if entry['agent_model'] == model}
-            if len(matches) == 1:
-                policy['agent_levels'][agent] = matches.pop()
-            else:
-                # A custom model cannot be converted into a runtime-independent pin.
-                del policy['agent_levels'][agent]
-    policy['agent_efforts'].update(working.get('effort', {}).get('agent_overrides', {}))
-    review = working.get('review', {})
-    policy['reviewers'].update(review.get('reviewer_instances', {}))
-    policy['reviewer_efforts'].update(review.get('effort', {}))
-    if 'parallel_lanes' in review:
-        for workflow in policy['workflows'].values():
-            workflow['parallel_reviews'] = review['parallel_lanes']
-    validate(policy)
-    return policy
+def initial_paths(root: Path, policy: dict) -> set:
+    """Classify old generated settings independently of the first launch."""
+    from .resolver import load_catalog  # resolver uses config.read_json
+
+    paths = {('runtime',), ('model_policy', 'provider'), ('review', 'default_reviewers'),
+             ('review', 'parallel_lanes')}
+    paths.update(('models', phase) for phase in PHASES)
+    for runtime, section in policy['runtimes'].items():
+        paths.add(('model_policy', 'runtime_tiers', runtime))
+        review = section['review']
+        paths.update(('review', 'reviewer_instances', name) for name in review['reviewer_instances'])
+        paths.update(('review', 'effort', adapter) for adapter in review['effort'])
+        agents = {name for blueprint in section['blueprints'].values() for name in blueprint.get('agents', {})}
+        directory = installation_dir(root, runtime, os.environ, Path.home())
+        try:
+            catalog = load_catalog(directory)
+        except ConfigError:
+            # Installation validation belongs to launch. An unavailable catalog
+            # leaves its unknown working-config entries provisional.
+            pass
+        else:
+            agents.update(name for name, entry in catalog['agents'].items() if entry.get('phaseType') in PHASES)
+        for name in agents:
+            paths.update((('model_overrides', name), ('effort', 'agent_overrides', name)))
+    return paths
+
+
+def provisional_entries(baseline: dict) -> list:
+    entries = []
+    for prefix in (('model_overrides',), ('effort', 'agent_overrides')):
+        values = get_path(baseline, prefix)
+        if isinstance(values, dict):
+            entries.extend({'path': [*prefix, name], 'seed': value}
+                           for name, value in sorted(values.items()) if is_agent_name(name))
+    return entries
 
 
 def seed_settings(defaults: dict, existing: dict) -> dict:
@@ -467,17 +502,12 @@ def initialize(root: Path) -> None:
         if git_tracked(root):
             check_staged(root)
         working = read_json(root / WORKING) if (root / WORKING).exists() else {}
-        try:
-            policy = read_json(root / POLICY) if (root / POLICY).exists() else seed_policy(working)
-        except (TypeError, KeyError, AttributeError) as exc:
-            raise ConfigError(f'Malformed legacy configuration: {exc}') from exc
+        policy = read_json(root / POLICY) if (root / POLICY).exists() else load_default()
         validate(policy)
-        # Ownership is identical across workflows and runtimes.
-        values = resolve(policy, next(iter(policy['workflows'])), 'claude', 'medium') if policy['workflows'] else None
-        if values is None:
-            raise ConfigError('workflows: declare at least one workflow')
-        paths = managed_paths(values)
         existing_state = load_state(root)
+        paths = ({tuple(path) for path in existing_state['managed']} if existing_state is not None
+                 else initial_paths(root, policy))
+        provisional = []
         if (root / DEFAULT).exists():
             default = read_json(root / DEFAULT)
             reject_owned(default, paths | set(TRANSIENT))
@@ -488,9 +518,12 @@ def initialize(root: Path) -> None:
             if existing_state:
                 raise ConfigError('Restore missing config.default.json before init')
             baseline = project(working, paths | set(TRANSIENT))
+            provisional = provisional_entries(baseline)
             default = seed_settings(policy['gsd_defaults'], baseline)
             reject_owned(default, paths | set(TRANSIENT))
         state = existing_state or {'version': 1, 'baseline': baseline, 'managed': sorted(paths)}
+        if provisional:
+            state['provisional'] = provisional
         ignores = ignore_text(root)
         validate_ignores(root, ignores)
         contents = {POLICY: serialize(policy), DEFAULT: serialize(default), STATE: serialize(state), '.gitignore': ignores}

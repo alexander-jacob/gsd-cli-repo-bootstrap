@@ -98,7 +98,7 @@ class GsdCliTestCase(GsdCliFixture):
         before = self.config_path.read_bytes()
         self.initialize()
         self.assertEqual(self.config_path.read_bytes(), before)
-        self.assertEqual(self.policy()['schema_version'], 1)
+        self.assertEqual(self.policy()['schema_version'], 2)
         self.assertEqual(json.loads((self.project / '.planning/config.default.json').read_text())['custom'], {'keep': True})
 
     def test_init_on_bare_planning_from_subdirectory(self):
@@ -110,7 +110,7 @@ class GsdCliTestCase(GsdCliFixture):
         (self.project / 'src').mkdir()
         result = self.run_launcher('init', cwd=self.project / 'src')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.policy()['schema_version'], 1)
+        self.assertEqual(self.policy()['schema_version'], 2)
         self.assertTrue((self.project / '.planning/config.default.json').exists())
         self.assertTrue((self.project / '.gitignore').exists())
         self.assertFalse(self.config_path.exists())
