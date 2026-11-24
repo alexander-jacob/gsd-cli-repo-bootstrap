@@ -9,7 +9,9 @@ from pydantic import ValidationError
 from gsd_cli.policy import PolicyError, load_default, validate
 from gsd_cli.policy_model import PolicyFile
 
-EXAMPLE = Path(__file__).resolve().parent.parent / 'examples' / 'gsd-config-example.json'
+ROOT = Path(__file__).resolve().parent.parent
+EXAMPLE = ROOT / 'examples' / 'gsd-config-example.json'
+SEED = ROOT / 'gsd_cli' / 'data' / 'default-config.json'
 
 
 def mutated(data, path, value):
@@ -24,24 +26,33 @@ def mutated(data, path, value):
 
 class PolicyFileTests(unittest.TestCase):
     def test_starter_and_example_validate(self):
+        self.assertEqual(EXAMPLE.read_bytes(), SEED.read_bytes())
         for data in (load_default(), json.loads(EXAMPLE.read_text(encoding='utf-8'))):
+            self.assertEqual(data['schema_version'], 2)
             validate(data)
             PolicyFile.model_validate(data)
 
     def test_structural_rejections_match_policy_validate(self):
+        self.assertEqual(load_default()['schema_version'], 2)
         mutations = [
-            ('schema_version', 2), ('phase_defaults.planning', 'huge'),
-            ('runtimes.claude.high.agent_model', 'claude-opus-5-5'),
-            ('runtimes.claude.high.session_effort', 'xhigh'),
-            ('agent_levels.planner', 'high'), ('agent_efforts.gsd-planner', 'max'),
-            ('reviewers.fable-review.cli', 'gemini'), ('reviewer_efforts.claude', 'xhigh'),
-            ('workflows.plan.permissions.claude', 'yolo'), ('workflows.plan.parallel_reviews', 'yes'),
+            ('schema_version', 1),
+            ('runtimes.codex.blueprints', {}),
+            ('runtimes.claude.blueprints.high.session.effort', 'auto'),
+            ('runtimes.claude.blueprints.high.phases.verification.model', 'claude-opus-5-5'),
+            ('runtimes.codex.blueprints.high.phases', {}),
+            ('runtimes.codex.blueprints.high.agents', None),
+            ('runtimes.codex.blueprints.high.agents.gsd-executor', {}),
+            ('runtimes.codex.blueprints.high.agents.gsd-executor', {'model': None}),
+            ('runtimes.codex.blueprints.high.agents.gsd-executor', {'effort': 'max'}),
+            ('runtimes.codex.blueprints.high.agents.executor', {'effort': 'high'}),
+            ('runtimes.claude.review.reviewer_instances.astra-review.cli', 'gemini'),
+            ('runtimes.claude.review.effort.claude', 'xhigh'),
+            ('runtimes.claude.review.parallel_lanes', 'yes'),
+            ('runtimes.claude.review.default_reviewers', ['astra-review', 'astra-review']),
             ('extra_key', 1),
-            ('workflows.plan.session_efforts', None), ('workflows.exec.session_efforts.claude', None),
-            ('workflows.exec.session_efforts.codex', None),
         ]
         for path, value in mutations:
-            with self.subTest(path):
+            with self.subTest(path=path, value=value):
                 data = mutated(load_default(), path, value)
                 with self.assertRaises(PolicyError):
                     validate(data)
@@ -56,16 +67,30 @@ class PolicyFileTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             PolicyFile.model_validate(data)
 
-    def test_optional_keys_may_be_omitted_but_schema_never_allows_null(self):
-        data = mutated(load_default(), 'workflows.exec.session_efforts', {})
+    def test_partial_agent_overrides_and_absent_agents(self):
+        data = load_default()
+        self.assertIn('blueprints', data['runtimes']['codex'])
+        codex = data['runtimes']['codex']['blueprints']
+        del codex['low']['agents']
+        codex['high']['agents'] = {
+            'gsd-codebase-mapper': {'model': 'gpt-6-luna'},
+            'gsd-executor': {'effort': 'xhigh'},
+        }
         validate(data)
         PolicyFile.model_validate(data)
         schema = json.dumps(PolicyFile.model_json_schema())
         self.assertNotIn('"null"', schema)
         self.assertNotIn('"default": null', schema)
 
-    def test_codex_accepts_xhigh(self):
-        data = mutated(load_default(), 'runtimes.codex.high.session_effort', 'xhigh')
+    def test_runtime_efforts_and_blueprint_names_are_independent(self):
+        data = load_default()
+        self.assertIn('blueprints', data['runtimes']['codex'])
+        codex = data['runtimes']['codex']['blueprints']
+        codex['careful'] = copy.deepcopy(codex['high'])
+        codex['careful']['session']['effort'] = 'xhigh'
+        claude = data['runtimes']['claude']['blueprints']
+        claude['high']['session']['effort'] = 'max'
+        claude['high']['agents']['gsd-executor'] = {'effort': 'xhigh'}
         validate(data)
         PolicyFile.model_validate(data)
 
