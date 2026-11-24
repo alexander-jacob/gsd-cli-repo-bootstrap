@@ -70,7 +70,7 @@ class PolicyTests(unittest.TestCase):
                     validate(data)
 
     def test_codex_requires_full_agent_model_ids(self):
-        for alias in ('opus', 'fable', 'sonnet', 'haiku'):
+        for alias in ('opus', 'fable', 'sonnet', 'haiku', 'inherit'):
             for section, key in (('phases', 'execution'), ('agents', 'gsd-codebase-mapper')):
                 with self.subTest(alias=alias, section=section):
                     data = copy.deepcopy(self.policy)

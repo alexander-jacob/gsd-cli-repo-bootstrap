@@ -59,18 +59,19 @@ class PolicyFileTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     PolicyFile.model_validate(data)
 
-    def test_codex_agent_models_exclude_claude_aliases(self):
+    def test_codex_agent_models_exclude_reserved_tokens(self):
         data = load_default()
         for path in (
             'runtimes.codex.blueprints.high.phases.execution.model',
             'runtimes.codex.blueprints.high.agents.gsd-codebase-mapper.model',
         ):
             with self.subTest(path=path):
-                with self.assertRaises(ValidationError):
-                    PolicyFile.model_validate(mutated(data, path, 'opus'))
+                for token in ('opus', 'inherit'):
+                    with self.subTest(token=token), self.assertRaises(ValidationError):
+                        PolicyFile.model_validate(mutated(data, path, token))
                 PolicyFile.model_validate(mutated(data, path, 'custom-provider/opus-compatible-v2'))
 
-    def test_published_schema_disallows_claude_aliases_in_codex_agent_models(self):
+    def test_published_schema_disallows_reserved_tokens_in_codex_agent_models(self):
         schema = PolicyFile.model_json_schema()
 
         def resolve(node):
@@ -89,7 +90,7 @@ class PolicyFileTests(unittest.TestCase):
         agents = property_schema(blueprint, 'agents')
         agent_model = property_schema(resolve(next(iter(agents['patternProperties'].values()))), 'model')
         for model in (phase_model, agent_model):
-            self.assertCountEqual(model['not']['enum'], ('opus', 'fable', 'sonnet', 'haiku'))
+            self.assertCountEqual(model['not']['enum'], ('opus', 'fable', 'sonnet', 'haiku', 'inherit'))
 
     def test_missing_required_key_rejected(self):
         data = load_default()

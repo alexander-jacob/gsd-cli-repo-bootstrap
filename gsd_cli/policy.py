@@ -13,6 +13,7 @@ RESERVED = ('init', 'status', 'sessions', 'check', 'policy', 'schema', 'help', '
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
 CLAUDE_EFFORTS = (*EFFORTS, 'max')
 CLAUDE_AGENT_MODELS = ('fable', 'opus', 'sonnet', 'haiku')
+CODEX_RESERVED_AGENT_MODELS = (*CLAUDE_AGENT_MODELS, 'inherit')
 REVIEW_ADAPTERS = (*RUNTIMES, 'opencode')
 BLUEPRINT_NAME_PATTERN = r'^[a-z][a-z0-9-]*$'
 AGENT_NAME_PATTERN = r'^gsd-[a-z0-9-]+$'
@@ -63,8 +64,8 @@ def validate_settings(settings, path, runtime, *, agent=False, partial=False):
         model = settings['model']
         if agent and runtime == 'claude':
             choice(model, CLAUDE_AGENT_MODELS, f'{path}.model')
-        elif agent and model in CLAUDE_AGENT_MODELS:
-            raise PolicyError(f'{path}.model: expected a full Codex model ID, got Claude alias {model!r}')
+        elif agent and model in CODEX_RESERVED_AGENT_MODELS:
+            raise PolicyError(f'{path}.model: expected a full Codex model ID, got reserved token {model!r}')
         else:
             string(model, f'{path}.model')
     if 'effort' in settings:

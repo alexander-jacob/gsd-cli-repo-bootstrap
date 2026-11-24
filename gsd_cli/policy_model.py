@@ -22,7 +22,7 @@ NamedOverride = TypeVar('NamedOverride')
 
 
 def full_codex_model_id(value: str) -> str:
-    if value in rules.CLAUDE_AGENT_MODELS:
+    if value in rules.CODEX_RESERVED_AGENT_MODELS:
         raise ValueError('expected a full Codex model ID')
     return value
 
@@ -33,7 +33,7 @@ CodexAgentModel = Annotated[
     WithJsonSchema({
         'type': 'string',
         'pattern': TEXT_PATTERN,
-        'not': {'enum': list(rules.CLAUDE_AGENT_MODELS)},
+        'not': {'enum': list(rules.CODEX_RESERVED_AGENT_MODELS)},
     }),
 ]
 
