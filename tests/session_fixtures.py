@@ -123,8 +123,8 @@ def codex_session(home, cwd, thread_id, start, model, effort, *, parent=None, ro
 
 
 def launch_record(state_home, project, runtime, profile, time, session_model, session_effort,
-                  forwarded=(), config=None):
-    """Append one launch record shaped like record_launch's to the launch log."""
+                  forwarded=(), config=None, *, blueprint=None, review=None):
+    """Append a historical profile record or a blueprint snapshot to the launch log."""
     log = Path(state_home) / "gsd-cli" / "launches.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -133,6 +133,9 @@ def launch_record(state_home, project, runtime, profile, time, session_model, se
         "session_effort": session_effort, "forwarded_args": list(forwarded),
         "config": config if config is not None else {}, "gsd_defaults": None,
     }
+    if blueprint is not None:
+        del record["profile"]
+        record.update(blueprint=blueprint, review=review, policy={})
     with log.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
     return record

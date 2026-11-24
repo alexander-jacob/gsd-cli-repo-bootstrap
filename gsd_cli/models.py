@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 
 from .policy_model import PolicyFile
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ErrorKind = Literal['usage', 'config', 'policy', 'version', 'os', 'requirements', 'incomplete']
 JSON_COMMANDS = ('status', 'check', 'policy', 'sessions', 'preview')
 DataT = TypeVar('DataT')
@@ -22,7 +22,7 @@ class ErrorInfo(Model):
 
 
 class Envelope(Model, Generic[DataT]):
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Literal[2] = SCHEMA_VERSION
     command: str | None  # Narrowed to a Literal in each subclass.
     ok: bool
     data: DataT | None = None
@@ -65,7 +65,8 @@ class PolicyData(Model):
 FindingCode = Literal['model_mismatch', 'effort_mismatch', 'effort_clamped', 'installed_effort_mismatch',
                       'model_unknown', 'effort_unknown', 'forwarded_may_override', 'installed_effort_unknown',
                       'inherit_depends_on_forwarded', 'propagation_unknown', 'unregistered_agent',
-                      'alias_equivalent', 'inherits_session_effort']
+                      'alias_equivalent', 'inherits_session_effort', 'installed_effort_differs',
+                      'project_effort_unverified']
 
 
 class FindingModel(Model):
@@ -98,10 +99,19 @@ class Expected(Model):
     effort_source: str
 
 
+class ProjectDefinition(Model):
+    source: str | None
+    destination: str
+    action: Literal['create', 'update', 'unchanged', 'remove', 'forget']
+    model: str | None
+    effort: str | None
+
+
 class AgentRow(Model):
     agent: str
     phase: str
-    in_workflow: bool
+    covered: bool
+    project_definition: ProjectDefinition | None
     expected: Expected
     resolved: ResolvedRow | None
     check: Literal['ok', 'mismatch', 'unknown']
@@ -142,12 +152,13 @@ class PreviewData(Model):
     gsd_context: GsdContext | None
     pending_capture: list[str]
     diagnostics: list[str]
-    config: dict[str, Any]
+    config: dict[str, Any] | None
 
 
 class LaunchSummary(Model):
     """A launch record without its embedded config, policy and gsd_defaults."""
     time: str | None
+    blueprint: str | None = None
     profile: str | None
     workflow: str | None
     level: str | None

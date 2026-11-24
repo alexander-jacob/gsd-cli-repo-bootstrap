@@ -18,7 +18,7 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         self.assertTrue(result.stdout.endswith('\n'))
         body = json.loads(result.stdout)
         self.assertIsInstance(body, dict)
-        self.assertEqual(body['schema_version'], 1)
+        self.assertEqual(body['schema_version'], 2)
         return body
 
     def test_unknown_option_before_command_is_usage_envelope(self):
@@ -83,17 +83,17 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         with mock.patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
             self.assertEqual(cli.package_version(), 'unknown')
 
-    def test_policy_and_schema_are_reserved_workflow_names(self):
+    def test_policy_and_schema_are_selectable_blueprint_names(self):
         self.initialize()
         path = self.project / 'gsd-cli.config.json'
         original = json.loads(path.read_text(encoding='utf-8'))
         for name in ('policy', 'schema'):
             policy = copy.deepcopy(original)
-            policy['workflows'][name] = copy.deepcopy(policy['workflows']['plan'])
+            blueprints = policy['runtimes']['claude']['blueprints']
+            blueprints[name] = copy.deepcopy(blueprints['medium'])
             path.write_text(json.dumps(policy), encoding='utf-8')
-            result = self.run_launcher('plan', 'claude', '--config')
-            self.assertEqual(result.returncode, 1, name)
-            self.assertIn('reserved or invalid workflow name', result.stderr)
+            result = self.run_launcher('claude', name)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_forwarding_after_policy_or_schema_is_rejected(self):
         for name in ('policy', 'schema'):
@@ -104,7 +104,7 @@ class JsonErrorTests(fixtures.GsdCliFixture):
     def test_policy_error_is_policy_envelope(self):
         self.initialize()
         (self.project / 'gsd-cli.config.json').write_text('{}', encoding='utf-8')
-        result = self.run_launcher('plan', 'claude', '--config', '--json')
+        result = self.run_launcher('claude', 'medium', '--config', '--json')
         self.assertEqual(result.returncode, 1)
         body = self.envelope(result)
         self.assertEqual((body['ok'], body['command'], body['error']['kind']), (False, 'preview', 'policy'))
@@ -160,22 +160,22 @@ class JsonReadTests(fixtures.GsdCliFixture):
     def test_policy_reports_local_differences(self):
         self.initialize()
         policy = self.policy()
-        policy['agent_levels']['gsd-planner'] = 'low'
+        policy['runtimes']['claude']['blueprints']['high']['agents']['gsd-planner']['effort'] = 'low'
         self.put_policy(policy)
         env = PolicyEnvelope.model_validate_json(self.run_launcher('policy', '--json').stdout, strict=True)
-        self.assertEqual(env.data.differs_from_shipped, ['agent_levels.gsd-planner'])
+        self.assertEqual(env.data.differs_from_shipped, ['runtimes.claude.blueprints.high.agents.gsd-planner.effort'])
 
     def test_invalid_policy_is_policy_error(self):
         self.initialize()
         policy = self.policy()
-        policy['phase_defaults']['planning'] = 'huge'
+        policy['runtimes']['codex']['blueprints']['low']['phases']['planning']['effort'] = 'huge'
         self.put_policy(policy)
         result = self.run_launcher('policy', '--json')
         self.assertEqual(result.returncode, 1)
         body = json.loads(result.stdout)
         self.assertEqual((body['ok'], body['command'], body['data'], body['error']['kind']),
                          (False, 'policy', None, 'policy'))
-        self.assertTrue(body['error']['message'].startswith('phase_defaults.planning'))
+        self.assertTrue(body['error']['message'].startswith('runtimes.codex.blueprints.low.phases.planning.effort'))
 
     def test_missing_policy_is_config_error(self):
         result = self.run_launcher('policy', '--json')
@@ -194,7 +194,7 @@ class JsonReadTests(fixtures.GsdCliFixture):
 
     def test_json_reads_write_nothing(self):
         self.initialize()
-        self.assertEqual(self.run_launcher('plan', 'claude').returncode, 0)
+        self.assertEqual(self.run_launcher('claude', 'medium').returncode, 0)
         (self.project / '.planning/.gsd-cli-journal.json').write_text('{}', encoding='utf-8')
         before = self.snapshot_tree()
         for args in (('status',), ('check',), ('policy',)):
@@ -211,8 +211,8 @@ class ModelTests(unittest.TestCase):
         self.assertIsNone(json_command([]))
         self.assertIsNone(json_command(['--json']))
         self.assertIsNone(json_command(['init']))
-        self.assertIsNone(json_command(['claude']))
-        self.assertEqual(json_command(['plan', 'claude']), 'preview')
+        self.assertIsNone(json_command(['plan', 'claude']))
+        self.assertEqual(json_command(['claude', 'medium']), 'preview')
 
     def test_failure_uses_each_command_envelope(self):
         from gsd_cli.models import ErrorEnvelope, failure

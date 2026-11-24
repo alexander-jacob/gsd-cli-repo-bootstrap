@@ -183,25 +183,27 @@ def runtime_command(runtime: str):
         argv = launch_arguments(runtime, selected['session'], secure, forwarded)
         version = check_installation(root, runtime, policy['gsd']['min_version'])
         if show_config:
-            data, captured, resolved, _ = config.preview(root, policy, runtime, blueprint, version.directory)
-            inspection = resolver.inspect(root, data, runtime, policy['gsd']['min_version'])
-            if as_json:
-                complete = inspection['complete']
-                emit(PreviewEnvelope(ok=complete, data=preview.report(
-                    root, runtime, blueprint, policy, resolved, data, captured, argv, forwarded, inspection),
-                    error=None if complete else ErrorInfo(
-                        kind='incomplete', message='Configuration preview is incomplete; see diagnostics.')))
-            color = preview.use_color(click.get_text_stream('stdout'), os.environ)
-            if details:
-                report = preview.render(root, runtime, blueprint, policy, resolved, data,
-                                        captured, argv, forwarded, inspection)
-                marker = 'Launcher effective configuration:\n'
-                before, raw_json = report.split(marker, 1)
-                report = before + marker + preview.colorize_json(raw_json, color)
+            data, captured, definitions = None, [], {}
+            resolved = {**selected['session'], 'review': policy['runtimes'][runtime]['review'], 'agents': {}}
+            if version.ok:
+                try:
+                    data, captured, resolved, definitions = config.preview(root, policy, runtime, blueprint, version.directory)
+                except config.CatalogError as exc:
+                    inspection = resolver.empty_inspection(version)
+                    inspection['diagnostics'].append(str(exc))
+                else:
+                    inspection = resolver.inspect(root, data, runtime, version.minimum, version=version)
             else:
-                report = preview.render_compact(root, runtime, blueprint, policy, resolved,
-                                                data, captured, argv, forwarded, inspection, color)
-            click.echo(report, nl=False, color=color)
+                inspection = resolver.empty_inspection(version)
+                inspection['diagnostics'].append(format_result(version))
+            report = preview.report(root, runtime, blueprint, resolved, data, captured, argv, forwarded,
+                                    inspection, definitions, secure=secure)
+            if as_json:
+                complete = report['complete']
+                emit(PreviewEnvelope(ok=complete, data=report, error=None if complete else ErrorInfo(
+                    kind='incomplete', message='Configuration preview is incomplete; see diagnostics.')))
+            color = preview.use_color(click.get_text_stream('stdout'), os.environ)
+            click.echo(preview.render(report, details, color), nl=False, color=color)
             if not inspection['complete']:
                 raise click.ClickException('Configuration preview is incomplete; see resolver diagnostics above.')
             return

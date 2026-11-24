@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import config
 from .policy import is_agent_name
-from .versions import check_installation, format_result
+from .versions import CheckResult, check_installation, format_result
 
 QUERY_TIMEOUT = 20
 OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -140,10 +140,14 @@ def load_catalog(installation: Path) -> dict:
     return manifest
 
 
-def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
-    version = check_installation(root, runtime, minimum)
-    result = {'installation': {**asdict(version), 'directory': str(version.directory)},
-              'catalog': {}, 'context': {}, 'agents': {}, 'diagnostics': [], 'complete': False}
+def empty_inspection(version: CheckResult) -> dict:
+    return {'installation': {**asdict(version), 'directory': str(version.directory)},
+            'catalog': {}, 'context': {}, 'agents': {}, 'diagnostics': [], 'complete': False}
+
+
+def inspect(root: Path, data: dict, runtime: str, minimum: str, *, version: CheckResult | None = None) -> dict:
+    version = version or check_installation(root, runtime, minimum)
+    result = empty_inspection(version)
     diagnostics = result['diagnostics']
     if not version.ok:
         diagnostics.append(format_result(version))

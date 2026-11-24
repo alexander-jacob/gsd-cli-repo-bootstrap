@@ -6,7 +6,7 @@ from typing import NamedTuple
 
 import click
 
-from . import config, models
+from . import config
 
 
 def display(value) -> str:
@@ -33,7 +33,7 @@ CHECKS = {'OK': 'ok', 'NOT OK': 'mismatch', 'UNKNOWN': 'unknown'}
 
 
 def findings(model: str | None, effort: str | None, result: dict, runtime: str,
-             session_effort: str, forwarded: bool, aliases: dict) -> list[Finding]:
+             session_effort: str, forwarded: bool, aliases: dict, *, project_definition=None) -> list[Finding]:
     """Coded comparison findings, ordered mismatches, unknowns, then notes."""
     found = []
 
@@ -55,7 +55,17 @@ def findings(model: str | None, effort: str | None, result: dict, runtime: str,
     if result.get('effort_clamped'):
         add('effort_clamped', 'mismatch', 'effort clamped to ' + display(result.get('effort_rendered'))
             + ': ' + display(result.get('effort_clamp_reason')))
-    if runtime == 'claude':
+    if project_definition and project_definition['effort'] is not None:
+        # The installed resolver inspects upstream frontmatter. A different
+        # upstream default is expected when the launcher prepares a local copy.
+        if result.get('effort_effective_source') not in ('frontmatter', 'frontmatter-absent'):
+            add('installed_effort_unknown', 'unknown', 'installed Claude effort unknown; resolver supplied no file evidence')
+        elif result.get('effort_effective') != project_definition['effort']:
+            add('installed_effort_differs', 'note',
+                f"installed effort {display(result.get('effort_effective'))}, "
+                f"prospective project effort {display(project_definition['effort'])}")
+        add('project_effort_unverified', 'unknown', 'Claude runtime effort for the project definition is unobserved')
+    elif runtime == 'claude':
         source = result.get('effort_effective_source')
         observed = result.get('effort_effective')
         if source == 'frontmatter-absent' or (source == 'frontmatter' and observed == 'inherit'):
@@ -107,7 +117,7 @@ def expectations(data: dict, agent: str, meta: dict, runtime: str) -> tuple:
         model = entry.get('model') if isinstance(entry, dict) else entry
         if tier == 'inherit':
             model = 'inherit'
-        source = f'models.{phase}={display(tier)}'
+        source = f'models.{phase}={display(tier)}' if tier is not None else 'GSD default (no explicit model expectation)'
     effort = value_at(data, 'effort', 'agent_overrides', agent)
     effort_source = f'effort.agent_overrides.{agent}'
     if effort is None:
@@ -120,129 +130,128 @@ def expectations(data: dict, agent: str, meta: dict, runtime: str) -> tuple:
     return model, effort, source, effort_source
 
 
-def agent_names(data: dict, inspection: dict) -> list[str]:
-    """Every registered or configured agent, sorted by phase and then name."""
+def agent_rows(runtime: str, resolved: dict, data: dict, inspection: dict, project_definitions: dict,
+               forwarded: list[str]) -> list[dict]:
+    agents = resolved['agents']
     catalog = inspection['catalog']
-    names = set(catalog) | set(inspection['agents'])
+    results = inspection['agents']
+    names = agents.keys() | catalog.keys() | results.keys() | project_definitions.keys()
     for key in (('model_overrides',), ('effort', 'agent_overrides')):
         configured = value_at(data, *key)
         if isinstance(configured, dict):
             names.update(configured)
-    return sorted(names, key=lambda a: (str(catalog.get(a, {}).get('phaseType', 'unknown')), a))
-
-
-def reviewer_rows(data: dict, resolved: dict) -> list[tuple]:
-    """(name, adapter, model, effort) for each selected reviewer, as configured."""
     rows = []
-    for name in resolved['reviewers']:
-        reviewer = value_at(data, 'review', 'reviewer_instances', name) or {}
-        adapter = reviewer.get('cli')
-        effort = value_at(data, 'review', 'effort', adapter) if isinstance(adapter, str) else None
-        rows.append((name, adapter, reviewer.get('model'), effort))
-    return rows
-
-
-def report(root: Path, runtime: str, blueprint: str, policy: dict,
-           resolved: dict, data: dict, captured: list[str], argv: list[str],
-           forwarded: list[str], inspection: dict) -> models.PreviewData:
-    """The configuration preview as a machine-readable payload; same evidence as render."""
-    catalog, results = inspection['catalog'], inspection['agents']
-    phases = policy['runtimes'][runtime]['blueprints'][blueprint]['phases']
-    rows = []
-    for agent in agent_names(data, inspection):
+    for agent in names:
+        settings = agents.get(agent, {})
         meta = catalog.get(agent, {})
-        phase = meta.get('phaseType', 'unknown')
-        model, effort, model_source, effort_source = expectations(data, agent, meta, runtime)
+        phase = settings.get('phase') or meta.get('phaseType') or 'unknown'
+        covered = settings.get('model') is not None
+        if covered:
+            model, effort = settings['model'], settings['effort']
+            model_source, effort_source = settings['model_source'], settings['effort_source']
+        else:
+            model, effort, model_source, effort_source = expectations(data, agent, meta, runtime)
+        definition = project_definitions.get(agent)
         result = results.get(agent)
         found = findings(model, effort, result or {}, runtime, resolved['effort'], bool(forwarded),
-                         inspection.get('aliases', {}))
-        rows.append(models.AgentRow(
-            agent=agent, phase=str(phase), in_workflow=phase in phases,
-            expected=models.Expected(model=model, effort=effort, model_source=model_source,
-                                     effort_source=effort_source),
-            resolved=result, check=CHECKS[status(found)],
-            findings=[models.FindingModel(**f._asdict()) for f in found]))
-    context = inspection.get('context', {})
-    gsd_context = None
-    if context:
-        gsd_context = models.GsdContext(source=context.get('source'), workstream=inspection.get('workstream', ''),
-                                        loader_differences=config.changed_paths(data, context.get('config', {})))
-    return models.PreviewData(
-        project=str(root.resolve()), runtime=runtime, blueprint=blueprint,
-        complete=inspection['complete'],
-        session=models.SessionRequest(
-            model=resolved['model'], effort=resolved['effort'],
-            permissions='bypass' if any(a.startswith('--dangerously-') for a in argv) else 'normal',
-            argv=argv, forwarded=forwarded),
-        reviewers=[models.ReviewerRow(name=n, cli=c, model=m, effort=e) for n, c, m, e in reviewer_rows(data, resolved)],
-        installation=models.CheckEntry(**inspection['installation']),
-        agents=rows, gsd_context=gsd_context, pending_capture=captured,
-        diagnostics=inspection['diagnostics'], config=data)
+                         inspection.get('aliases', {}), project_definition=definition)
+        rows.append(dict(agent=agent, phase=phase, covered=covered, project_definition=definition,
+                         expected=dict(model=model, effort=effort, model_source=model_source, effort_source=effort_source),
+                         resolved=result, check=CHECKS[status(found)], findings=[f._asdict() for f in found]))
+    return sorted(rows, key=lambda row: (row['phase'], row['agent']))
 
 
-def render(root: Path, runtime: str, blueprint: str, policy: dict,
-           resolved: dict, data: dict, captured: list[str], argv: list[str],
-           forwarded: list[str], inspection: dict) -> str:
-    state = 'COMPLETE' if inspection['complete'] else 'INCOMPLETE'
-    install = inspection['installation']
-    lines = [f'Configuration preview: {runtime}/{display(blueprint)} [{state}]',
-             f'Project: {display(str(root))}',
-             f'GSD: {display(install["installed"])}; minimum {display(install["minimum"])}; {display(install["directory"])}']
-    for label, path in [('Policy', config.POLICY), ('Defaults', config.DEFAULT), ('Working', config.WORKING)]:
-        lines.append(f'{label}: {display(str(root / path))}')
-    lines += ['', 'Session (launcher requests; no AI session was run)',
-              'Model | Effort | Check',
-              f'{display(resolved["model"])} | {display(resolved["effort"])} | UNKNOWN',
-              '  Configuration only; no independent session execution evidence.',
-              'Child argv: ' + json.dumps(argv, ensure_ascii=True),
-              'Permissions: ' + ('bypass requested' if any(a.startswith('--dangerously-') for a in argv) else 'normal requested')]
-    if forwarded:
-        lines.append('Forwarded arguments may override launcher requests; child precedence is not predicted.')
-    lines += ['', 'Phase model settings: ' + display(data.get('models', {})),
-              'GSD agents (all registered/configured roles; this is not a workflow execution trace)',
-              'Agent | Requested model | GSD model | Requested effort | GSD effort | Installed effort | Check']
-    catalog, agents = inspection['catalog'], inspection['agents']
-    phase_before = None
-    for agent in agent_names(data, inspection):
-        meta = catalog.get(agent, {})
-        phase = meta.get('phaseType', 'unknown')
-        if phase != phase_before:
+def report(root: Path, runtime: str, blueprint: str, resolved: dict, data: dict | None, captured: list[str],
+           argv: list[str], forwarded: list[str], inspection: dict, project_definitions: dict, *, secure: bool) -> dict:
+    """Build the common text and JSON report from the preparation and the installed query."""
+    rows = agent_rows(runtime, resolved, data or {}, inspection, project_definitions, forwarded)
+    review = resolved['review']
+    context = inspection['context']
+    gsd_context = (dict(source=context['source'], workstream=inspection.get('workstream', ''),
+                        loader_differences=config.changed_paths(data, context['config'])) if context else None)
+    reviewers = []
+    for name in review['default_reviewers']:
+        entry = review['reviewer_instances'][name]
+        reviewers.append(dict(name=name, cli=entry['cli'], model=entry['model'], effort=review['effort'][entry['cli']]))
+    return dict(project=str(root.resolve()), runtime=runtime, blueprint=blueprint, complete=inspection['complete'],
+                session=dict(model=resolved['model'], effort=resolved['effort'], permissions='normal' if secure else 'bypass',
+                             argv=argv, forwarded=forwarded),
+                installation=inspection['installation'], reviewers=reviewers, agents=rows,
+                gsd_context=gsd_context, pending_capture=captured, diagnostics=inspection['diagnostics'], config=data)
+
+
+def render(report: dict, details: bool, color: bool) -> str:
+    state = 'COMPLETE' if report['complete'] else 'INCOMPLETE'
+    heading = f"Configuration preview: {report['runtime']}/{display(report['blueprint'])} [{state}]"
+    session = report['session']
+    lines = [click.style(heading, fg='cyan', bold=True) if color else heading,
+             'Project: ' + display(report['project']),
+             f"Session request: {display(session['model'])} | effort {display(session['effort'])} | ? actual run unknown"]
+    if details:
+        install = report['installation']
+        lines.append(f"GSD: {display(install['installed'])} | minimum {display(install['minimum'])} | {display(install['directory'])}")
+        for label, path in [('Policy', config.POLICY), ('Defaults', config.DEFAULT), ('Working', config.WORKING)]:
+            lines.append(f"{label}: {display(str(Path(report['project']) / path))}")
+        lines.extend(['Child argv: ' + display(session['argv']), 'Permissions: ' + session['permissions']])
+    if session['forwarded']:
+        lines.append('Forwarded options may override launcher requests: ' + display(session['forwarded']))
+    lines.extend(['', 'Agent | Coverage | Model/effort source | Requested model → GSD model | Requested effort → GSD effort | Check'])
+    last_phase = None
+    for row in report['agents']:
+        phase = row['phase']
+        if phase != last_phase:
             lines.append(f'[{display(phase)}]')
-            phase_before = phase
-        model, effort, model_source, effort_source = expectations(data, agent, meta, runtime)
-        result = agents.get(agent, {})
-        check, notes = compare(model, effort, result, runtime, resolved['effort'], bool(forwarded), inspection.get('aliases', {}))
-        installed = result.get('effort_effective') if result.get('effort_effective_source') in ('frontmatter', 'frontmatter-absent') else None
-        lines.append(' | '.join(display(v) for v in (agent, model, result.get('model'), effort, result.get('effort'), installed, check)))
-        lines.append(f'  Inputs: {display(model_source)}; {display(effort_source)}')
-        if result:
-            lines.append('  Rendered effort: ' + display(result.get('effort_rendered'))
-                         + '; parameter=' + display(result.get('effort_param'))
-                         + '; propagation=' + display(result.get('effort_propagation'))
-                         + '; evidence=' + display(result.get('effort_effective_source')))
-            lines.append('  Host effort argv: ' + display(result.get('effort_argv'))
-                         + '; fast mode=' + display(result.get('fast_mode'))
-                         + '; fast mode supported=' + display(result.get('fast_mode_supported')))
-        if notes:
-            # Notes already escape values at construction; do not double escape.
-            lines.append('  ' + '; '.join(notes))
-    context = inspection.get('context', {})
-    if context:
-        lines.append('GSD config source: ' + display(context.get('source')))
-        if inspection.get('workstream'):
-            lines.append('GSD_WORKSTREAM: ' + display(inspection['workstream']))
-        loaded = context.get('config', {})
-        differences = config.changed_paths(data, loaded)
-        lines.append('GSD loader differences (defaults/normalization/overlays): ' + display(differences))
-    lines += ['', 'External reviewers (configured values; provider execution is unknown)',
-              'Reviewer | Adapter | Model | Effort | Check']
-    for row in reviewer_rows(data, resolved):
-        lines.append(' | '.join(display(v) for v in (*row, 'UNKNOWN')))
-    lines += ['', 'Pending persistent capture (not saved): ' + display(captured),
-              'Checks: OK=matches evidence; NOT OK=known mismatch; UNKNOWN=insufficient evidence.']
-    for diagnostic in inspection['diagnostics']:
+            last_phase = phase
+        result = row['resolved'] or {}
+        expected = row['expected']
+        mark = {'ok': '✓', 'mismatch': '✗', 'unknown': '?'}[row['check']]
+        if color:
+            mark = click.style(mark, fg={'✓': 'green', '✗': 'red', '?': 'bright_black'}[mark], bold=True)
+        coverage = 'covered' if row['covered'] else 'uncovered'
+        sources = 'unmanaged'
+        if row['covered']:
+            sources = '/'.join(expected[field].rsplit('.', 3)[1].removesuffix('s')
+                               for field in ('model_source', 'effort_source'))
+        lines.append(f"{display(row['agent'])} | {coverage} | {sources} | "
+                     f"{display(expected['model'])} → {display(result.get('model'))} | "
+                     f"{display(expected['effort'])} → {display(result.get('effort'))} | {mark}")
+        definition = row['project_definition']
+        if definition:
+            lines.append(f"  Project definition: {definition['action']} {display(definition['destination'])}"
+                         + (f" | {display(definition['model'])}/{display(definition['effort'])}" if definition['model'] else ''))
+            if definition['source']:
+                lines.append(f"  Installed source: {display(definition['source'])}")
+        if report['runtime'] == 'claude' and result:
+            source = result['effort_effective_source']
+            installed = result['effort_effective'] if source in ('frontmatter', 'frontmatter-absent') else None
+            lines.append(f"  Installed frontmatter effort: {display(installed)} | resolver evidence: {display(source)}")
+        if details:
+            lines.append(f"  Inputs: {display(expected['model_source'])} | {display(expected['effort_source'])}")
+            if result:
+                lines.extend([f"  Rendered effort: {display(result.get('effort_rendered'))}"
+                              f" | parameter={display(result.get('effort_param'))} | propagation={display(result.get('effort_propagation'))}",
+                              f"  Host effort argv: {display(result.get('effort_argv'))}"
+                              f" | fast mode={display(result.get('fast_mode'))} | supported={display(result.get('fast_mode_supported'))}"])
+            lines.extend('  ' + finding['message'] for finding in row['findings'])
+    context = report['gsd_context']
+    if details and context:
+        lines.append('GSD config source: ' + display(context['source']))
+        if context['workstream']:
+            lines.append('GSD_WORKSTREAM: ' + display(context['workstream']))
+        lines.append('GSD loader differences (defaults/normalization/overlays): ' + display(context['loader_differences']))
+    lines.extend(['', 'External reviewers (configured values, execution unknown)', 'Reviewer | Adapter | Model | Effort'])
+    for row in report['reviewers']:
+        lines.append(' | '.join(display(row[key]) for key in ('name', 'cli', 'model', 'effort')))
+    lines.append('✓ matches resolver evidence | ✗ mismatch | ? insufficient evidence')
+    if report['pending_capture']:
+        lines.append('Pending persistent capture (not saved): ' + display(report['pending_capture']))
+    for diagnostic in report['diagnostics']:
         lines.append('Diagnostic: ' + display(diagnostic))
-    lines += ['', 'Launcher effective configuration:', json.dumps(data, indent=2, ensure_ascii=True, allow_nan=False)]
+    if details and report['config'] is not None:
+        lines.extend(['', 'Launcher effective configuration:',
+                      colorize_json(json.dumps(report['config'], indent=2, ensure_ascii=True, allow_nan=False), color)])
+    elif not details:
+        lines.append('Use --config --details for resolver inputs, findings, and effective JSON.')
     return '\n'.join(lines) + '\n'
 
 
@@ -266,61 +275,3 @@ def colorize_json(value: str, enabled: bool) -> str:
 
 def use_color(stream, environ: dict) -> bool:
     return stream.isatty() and 'NO_COLOR' not in environ
-
-
-def render_compact(root: Path, runtime: str, blueprint: str, policy: dict,
-                   resolved: dict, data: dict, captured: list[str], argv: list[str],
-                   forwarded: list[str], inspection: dict, color: bool = False) -> str:
-    state = 'COMPLETE' if inspection['complete'] else 'INCOMPLETE'
-    heading = f'Configuration preview: {runtime}/{display(blueprint)} [{state}]'
-    lines = [click.style(heading, fg='cyan', bold=True) if color else heading,
-             f'Project: {display(str(root))}',
-             f'Session request: {display(resolved["model"])} | effort {display(resolved["effort"])} | ? actual run unknown',
-             'Agents covered by this blueprint (configured → GSD resolved; no session was run)']
-    phases = policy['runtimes'][runtime]['blueprints'][blueprint]['phases']
-    catalog, agents = inspection['catalog'], inspection['agents']
-    configured = set()
-    for key in (('model_overrides',), ('effort', 'agent_overrides')):
-        values = value_at(data, *key)
-        if isinstance(values, dict):
-            configured.update(values)
-    names = set(catalog) | set(agents) | configured
-    rows = []
-    for agent in names:
-        meta = catalog.get(agent, {})
-        phase = meta.get('phaseType', 'unknown')
-        if phase not in phases:
-            continue
-        model, effort, _, _ = expectations(data, agent, meta, runtime)
-        result = agents.get(agent, {})
-        check, _ = compare(model, effort, result, runtime, resolved['effort'], bool(forwarded), inspection.get('aliases', {}))
-        mark = {'OK': '✓', 'NOT OK': '✗', 'UNKNOWN': '?'}[check]
-        rows.append((phase, agent, display(model), display(result.get('model')),
-                     display(effort) + ' → ' + display(result.get('effort')), mark))
-    widths = [max(len(str(row[i])) for row in rows) if rows else 0 for i in range(1, 5)]
-    widths = [max(widths[i], len(label)) for i, label in enumerate(('Agent', 'Configured', 'GSD sees', 'Effort'))]
-    lines.append(' | '.join(label.ljust(width) for label, width in zip(
-        ('Agent', 'Configured', 'GSD sees', 'Effort'), widths)) + ' | Check')
-    last_phase = None
-    for phase, agent, model, gsd_model, effort, mark in sorted(rows):
-        if phase != last_phase:
-            phase_label = f'[{display(phase)}]'
-            lines.append(click.style(phase_label, fg='cyan') if color else phase_label)
-            last_phase = phase
-        if color:
-            mark = click.style(mark, fg={'✓': 'green', '✗': 'red', '?': 'bright_black'}[mark], bold=True)
-        lines.append(' | '.join(str(cell).ljust(width) for cell, width in zip(
-            (display(agent), model, gsd_model, effort), widths)) + ' | ' + mark)
-    lines.extend(['', 'Reviewers (configured; execution unknown): ' + ', '.join(display(v) for v in resolved['reviewers']),
-                  '✓ matches | ✗ mismatch | ? insufficient evidence',
-                  'Use --config --details for resolver inputs, diagnostics, and effective JSON.'])
-    if forwarded:
-        lines.append('Forwarded options may override launcher requests: ' + display(forwarded))
-    unclassified = configured - set(catalog)
-    if unclassified:
-        lines.append(f'{len(unclassified)} configured agents have no phase metadata; see --details.')
-    if captured:
-        lines.append('Pending persistent capture (not saved): ' + display(captured))
-    for diagnostic in inspection['diagnostics']:
-        lines.append('Diagnostic: ' + display(diagnostic))
-    return '\n'.join(lines) + '\n'
