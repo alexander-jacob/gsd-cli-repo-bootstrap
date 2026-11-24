@@ -186,6 +186,15 @@ def _definitions(directory: Path, roles: set[str]) -> dict[str, Path]:
     return found
 
 
+def check_project_identities(root: Path, desired) -> None:
+    local = _definitions(root / '.claude/agents', {Path(path).stem for path in desired})
+    for relative in desired:
+        path = root / relative
+        name = path.stem
+        if name in local and local[name] != path:
+            raise AgentError(f'{local[name]} already declares {name} for {path}')
+
+
 def plan_agents(root: Path, installation: Path, agents: dict, owned: dict[str, str]) -> AgentPlan:
     validate_owned(owned)
     desired = {}
@@ -208,7 +217,7 @@ def plan_agents(root: Path, installation: Path, agents: dict, owned: dict[str, s
             raise AgentError(f'Installed source and project agent directories coincide: {source_dir}')
         check_untracked(root, paths)
         sources = _definitions(source_dir, {Path(p).stem for p in desired})
-        local = _definitions(project_dir, {Path(p).stem for p in desired})
+        check_project_identities(root, desired)
         for rel in sorted(paths):
             path = root / rel
             role = path.stem
@@ -225,8 +234,6 @@ def plan_agents(root: Path, installation: Path, agents: dict, owned: dict[str, s
             after = None
             settings = desired.get(rel, {})
             if rel in desired:
-                if role in local and local[role] != path:
-                    raise AgentError(f'{local[role]} already declares {role} for {path}')
                 source = sources.get(role)
                 if source is None:
                     raise AgentError(f'{source_dir}: missing installed source declaring {role}')
