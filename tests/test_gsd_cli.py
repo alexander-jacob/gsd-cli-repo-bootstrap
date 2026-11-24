@@ -186,12 +186,29 @@ class GsdCliTestCase(GsdCliFixture):
             result = self.run_launcher(*args)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.snapshot(), before)
-        self.assertIn('gsd-cli codex BLUEPRINT', self.run_launcher('plan', 'codex').stderr)
         self.assertEqual(self.run_launcher('claude', '--help', cwd=self.root).returncode, 0)
         self.put_policy({'broken': True})
         self.assertEqual(self.run_launcher('--help').returncode, 0)
         self.assertEqual(self.run_launcher('init', '--help').returncode, 0)
         self.assertEqual(self.run_launcher('--help', cwd=self.root).returncode, 0)
+
+    def test_workflow_first_migration_hint_stops_at_forwarding_boundary(self):
+        for args, runtime in [
+            (('plan', 'codex', '--secure'), 'codex'),
+            (('plan', '--secure', 'codex'), 'codex'),
+            (('custom', '--config', '--details', 'claude', '--', 'codex'), 'claude'),
+            (('plan', '--config', '--json', 'codex'), 'codex'),
+        ]:
+            with self.subTest(args=args):
+                result = self.run_launcher(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(f'gsd-cli {runtime} BLUEPRINT', result.stdout + result.stderr)
+        for args in [('plan', '--secure', '--', 'codex'), ('plan', '--unknown', 'codex'),
+                     ('plan', 'other', 'codex')]:
+            with self.subTest(args=args):
+                result = self.run_launcher(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn('Workflow-first', result.stderr)
 
     def test_invalid_option_combinations_do_not_prepare(self):
         self.initialize()

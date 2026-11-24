@@ -276,9 +276,11 @@ def main():
     if json_mode and help_or_version(args):
         args, json_mode = [a for a in args if a != '--json'], False  # Help and version win over JSON.
     try:
-        if (len(args) >= 2 and not args[0].startswith('-') and args[0] not in cli.commands
-                and args[1] in RUNTIMES):
-            raise click.UsageError(f"Workflow-first syntax was replaced. Use 'gsd-cli {args[1]} BLUEPRINT'.")
+        if args and not args[0].startswith('-') and args[0] not in cli.commands:
+            launch_flags = {'--secure', '--config', '--details', '--json'}
+            runtime = next((arg for arg in args[1:] if arg not in launch_flags), None)
+            if runtime in RUNTIMES:
+                raise click.UsageError(f"Workflow-first syntax was replaced. Use 'gsd-cli {runtime} BLUEPRINT'.")
         if has_boundary and (not args or args[0] not in RUNTIMES):
             raise click.UsageError('forwarding after -- is supported only for runtime launches')
         cli.main(args=args, prog_name='gsd-cli', obj={'forwarded': forwarded, 'json': json_mode}, standalone_mode=False)
