@@ -213,6 +213,15 @@ class GsdCliTestCase(GsdCliFixture):
         result = self.run_launcher('claude', 'medium')
         self.assertEqual(result.returncode, 1)
         self.assertIn('MIGRATION.md', result.stderr)
+        for args in (('check',), ('policy',), ('claude', 'medium', '--config')):
+            with self.subTest(args=args):
+                plain = self.run_launcher(*args)
+                structured = self.run_launcher(*args, '--json')
+                self.assertEqual((plain.returncode, structured.returncode), (1, 1))
+                self.assertIn('MIGRATION.md', plain.stderr)
+                error = json.loads(structured.stdout)['error']
+                self.assertEqual(error['kind'], 'policy')
+                self.assertIn('MIGRATION.md', error['message'])
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(self.log.exists())
         self.assertFalse((self.root / 'state').exists())
@@ -361,9 +370,16 @@ class GsdCliTestCase(GsdCliFixture):
     def test_check_does_not_require_cli_executables_or_node(self):
         self.initialize()
         env = {**self.env, 'PATH': ''}
-        result = self.run_launcher('check', env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('PASS', result.stdout)
+        before = self.snapshot()
+        plain = self.run_launcher('check', env=env)
+        structured = self.run_launcher('check', '--json', env=env)
+        self.assertEqual((plain.returncode, structured.returncode), (0, 0))
+        self.assertIn('PASS', plain.stdout)
+        self.assertEqual([(row['runtime'], row['ok']) for row in json.loads(structured.stdout)['data']['results']],
+                         [('claude', True), ('codex', True)])
+        self.assertEqual(self.snapshot(), before)
+        self.assertFalse(self.log.exists())
+        self.assertFalse((self.root / 'state').exists())
 
     def test_missing_malformed_and_incomplete_gsd_block_launch(self):
         self.initialize()

@@ -85,11 +85,13 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(self.inspect()['complete'])
 
     def test_partial_failure_and_malformed_output_are_explicit(self):
+        before = self.snapshot()
         result = self.inspect(data={'fail_agent': 'gsd-planner'})
         self.assertFalse(result['complete'])
         self.assertIn('gsd-verifier', result['agents'])
         self.assertIn('gsd-planner', ' '.join(result['diagnostics']))
         self.assertFalse(self.inspect(data={'malformed_result': True})['complete'])
+        self.assertEqual(self.snapshot(), before)
 
     def test_malformed_catalog_nested_metadata_is_incomplete(self):
         path = self.core / 'bin/shared/model-catalog.json'

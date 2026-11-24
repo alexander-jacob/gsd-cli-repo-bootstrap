@@ -376,6 +376,47 @@ class PreviewCliTests(unittest.TestCase):
         self.assertEqual(secure.permissions, 'normal')
         self.assertFalse(any(a.startswith('--dangerously-') for a in secure.argv))
 
+    def test_policy_defaults_seed_only_the_initial_tracked_defaults(self):
+        from gsd_cli.policy import load_default
+
+        policy = load_default()
+        policy['gsd_defaults']['template_field'] = 'initial'
+        self.put_policy(policy)
+        self.install()
+        self.assertNotIn('template_field', json.loads(self.config_path.read_text(encoding='utf-8')))
+        self.assertEqual(self.preview_json('codex', 'medium').data.config['template_field'], 'initial')
+
+        policy['gsd_defaults']['template_field'] = 'changed'
+        policy['gsd_defaults']['new_template_field'] = True
+        self.put_policy(policy)
+        self.initialize()
+        before = self.snapshot()
+        preview = self.preview_json('codex', 'medium')
+        self.assertEqual(preview.data.config['template_field'], 'initial')
+        self.assertNotIn('new_template_field', preview.data.config)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_partial_override_for_uncovered_role_requires_both_fields(self):
+        self.install()
+        catalog = self.home / '.codex/gsd-core/bin/shared/model-catalog.json'
+        manifest = json.loads(catalog.read_text(encoding='utf-8'))
+        manifest['agents']['gsd-uncovered'] = {}
+        catalog.write_text(json.dumps(manifest), encoding='utf-8')
+        policy = self.policy()
+        agents = policy['runtimes']['codex']['blueprints']['medium'].setdefault('agents', {})
+        agents['gsd-uncovered'] = {'effort': 'high'}
+        self.put_policy(policy)
+        before = self.snapshot()
+        text = self.run_launcher('codex', 'medium', '--config')
+        self.assertEqual(text.returncode, 1)
+        error = self.preview_json('codex', 'medium', code=1)
+        self.assertIsNone(error.data)
+        self.assertEqual(error.error.kind, 'policy')
+        message = 'runtimes.codex.blueprints.medium.agents.gsd-uncovered.model'
+        self.assertIn(message, text.stderr)
+        self.assertIn(message, error.error.message)
+        self.assertEqual(self.snapshot(), before)
+
     def test_preview_distinguishes_installed_from_project_effort(self):
         self.install()
         subprocess.run(['git', 'init', '-q'], cwd=self.project, check=True)

@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["click>=8.1,<9", "pydantic>=2,<3"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "pytest-xdist>=3"]
+test = ["pytest>=8", "pytest-xdist>=3", "jsonschema>=4"]
 
 [project.scripts]
 gsd-cli = "gsd_cli.cli:main"
