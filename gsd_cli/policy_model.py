@@ -1,16 +1,41 @@
-"""Pydantic model of the project policy file; its JSON Schema derives from it."""
-from typing import Annotated, Any, Literal
+"""Pydantic model of the project policy file and its JSON Schema."""
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, WithJsonSchema, model_validator
 
 from . import policy as rules
 
 Level = Literal[rules.LEVELS]
-Effort = Literal[rules.EFFORTS]
-Phase = Literal[rules.PHASES]
-Text = Annotated[str, StringConstraints(pattern=r'^[^\x00]*\S[^\x00]*$')]
-AgentName = Annotated[str, StringConstraints(pattern=r'^gsd-[a-z0-9-]+$')]
-WorkflowName = Annotated[str, StringConstraints(pattern=r'^[a-z][a-z0-9-]*$')]
+CodexEffort = Literal[rules.EFFORTS]
+ClaudeEffort = Literal[rules.CLAUDE_EFFORTS]
+ClaudeAgentModel = Literal[rules.CLAUDE_AGENT_MODELS]
+TEXT_PATTERN = r'^[^\x00]*\S[^\x00]*$'
+Text = Annotated[str, StringConstraints(pattern=TEXT_PATTERN)]
+AgentName = Annotated[str, StringConstraints(pattern=rules.AGENT_NAME_PATTERN)]
+BlueprintName = Annotated[str, StringConstraints(pattern=rules.BLUEPRINT_NAME_PATTERN)]
+
+ModelId = TypeVar('ModelId')
+Effort = TypeVar('Effort')
+SessionSettings = TypeVar('SessionSettings')
+AgentSettings = TypeVar('AgentSettings')
+NamedOverride = TypeVar('NamedOverride')
+
+
+def full_codex_model_id(value: str) -> str:
+    if value in rules.CODEX_RESERVED_AGENT_MODELS:
+        raise ValueError('expected a full Codex model ID')
+    return value
+
+
+CodexAgentModel = Annotated[
+    Text,
+    AfterValidator(full_codex_model_id),
+    WithJsonSchema({
+        'type': 'string',
+        'pattern': TEXT_PATTERN,
+        'not': {'enum': list(rules.CODEX_RESERVED_AGENT_MODELS)},
+    }),
+]
 
 
 def unique(items: list) -> list:
@@ -19,13 +44,14 @@ def unique(items: list) -> list:
     return items
 
 
-def omissible():
-    """A key that may be left out but, when present, is never null.
+def omissible(*, schema_extra=None):
+    """Publish an optional key without accepting or advertising null."""
+    def update_schema(schema):
+        schema.pop('default', None)
+        if schema_extra:
+            schema.update(schema_extra)
 
-    The None default is not validated, so explicit null is rejected as
-    policy.validate rejects it, and the schema publishes no default.
-    """
-    return Field(default=None, json_schema_extra=lambda schema: schema.pop('default', None))
+    return Field(default=None, json_schema_extra=update_schema)
 
 
 class Strict(BaseModel):
@@ -36,98 +62,96 @@ class Gsd(Strict):
     min_version: Text
 
 
-class ClaudeEntry(Strict):
-    session_model: Text
-    agent_model: Literal['fable', 'opus', 'sonnet', 'haiku']
-    session_effort: Level
+class ModelEffort(Strict, Generic[ModelId, Effort]):
+    model: ModelId
+    effort: Effort
 
 
-class CodexEntry(Strict):
-    session_model: Text
-    agent_model: Text
-    session_effort: Effort
+class AgentOverride(Strict, Generic[ModelId, Effort]):
+    model_config = ConfigDict(json_schema_extra={'minProperties': 1})
+
+    model: ModelId = omissible()
+    effort: Effort = omissible()
+
+    @model_validator(mode='after')
+    def at_least_one_field(self):
+        if not self.model_fields_set:
+            raise ValueError('expected at least one of model and effort')
+        return self
 
 
-class ClaudeLevels(Strict):
-    high: ClaudeEntry
-    medium: ClaudeEntry
-    low: ClaudeEntry
+class Phases(Strict, Generic[AgentSettings]):
+    planning: AgentSettings
+    discuss: AgentSettings
+    research: AgentSettings
+    execution: AgentSettings
+    verification: AgentSettings
 
 
-class CodexLevels(Strict):
-    high: CodexEntry
-    medium: CodexEntry
-    low: CodexEntry
+class Blueprint(Strict, Generic[SessionSettings, AgentSettings, NamedOverride]):
+    session: SessionSettings
+    phases: Phases[AgentSettings]
+    agents: dict[AgentName, NamedOverride] = omissible(schema_extra={'additionalProperties': False})
 
 
-class Runtimes(Strict):
-    claude: ClaudeLevels
-    codex: CodexLevels
+CodexSession = ModelEffort[Text, CodexEffort]
+CodexAgent = ModelEffort[CodexAgentModel, CodexEffort]
+ClaudeSession = ModelEffort[Text, ClaudeEffort]
+ClaudeAgent = ModelEffort[ClaudeAgentModel, ClaudeEffort]
 
 
-class PhaseDefaults(Strict):
-    planning: Level
-    discuss: Level
-    research: Level
-    execution: Level
-    verification: Level
+class CodexBlueprint(Blueprint[CodexSession, CodexAgent, AgentOverride[CodexAgentModel, CodexEffort]]):
+    pass
+
+
+class ClaudeBlueprint(Blueprint[ClaudeSession, ClaudeAgent, AgentOverride[ClaudeAgentModel, ClaudeEffort]]):
+    pass
 
 
 class Reviewer(BaseModel):
-    # policy.validate requires cli and model and tolerates other keys here.
+    # Extra reviewer instance settings pass through to the GSD adapter.
     model_config = ConfigDict(extra='allow', strict=True)
-    cli: Literal[rules.RUNTIMES + ('opencode',)]
+
+    cli: Literal[rules.REVIEW_ADAPTERS]
     model: Text
 
 
 class ReviewerEfforts(Strict):
     claude: Level
-    codex: Effort
-    opencode: Effort
+    codex: CodexEffort
+    opencode: CodexEffort
 
 
-class WorkflowReviewerGroups(Strict):
-    claude: str
-    codex: str
+class Review(Strict):
+    reviewer_instances: dict[Text, Reviewer] = Field(json_schema_extra={'additionalProperties': False})
+    default_reviewers: Annotated[list[str], AfterValidator(unique), Field(json_schema_extra={'uniqueItems': True})]
+    effort: ReviewerEfforts
+    parallel_lanes: bool
 
 
-class WorkflowPermissions(Strict):
-    claude: Literal['normal', 'bypass']
-    codex: Literal['normal', 'bypass']
+BlueprintSettings = TypeVar('BlueprintSettings')
 
 
-class SessionEfforts(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
-    claude: dict[Level, Level] = omissible()
-    codex: dict[Level, Effort] = omissible()
+class Runtime(Strict, Generic[BlueprintSettings]):
+    blueprints: dict[BlueprintName, BlueprintSettings] = Field(
+        min_length=1, json_schema_extra={'additionalProperties': False}
+    )
+    review: Review
 
 
-class Workflow(Strict):
-    tasks: Annotated[list[Phase], AfterValidator(unique), Field(json_schema_extra={'uniqueItems': True})]
-    task_levels: dict[Phase, Level]
-    reviewer_groups: WorkflowReviewerGroups
-    parallel_reviews: bool
-    permissions: WorkflowPermissions
-    session_efforts: SessionEfforts = omissible()
+class Runtimes(Strict):
+    claude: Runtime[ClaudeBlueprint]
+    codex: Runtime[CodexBlueprint]
 
 
 class PolicyFile(Strict):
-    """The complete gsd-cli project policy file (gsd-cli.config.json).
+    """Complete gsd-cli.config.json input.
 
-    The launcher validates the policy with policy.validate. This schema mirrors
-    its structural rules only; cross-references (reviewer groups naming declared
-    reviewers, workflow groups naming declared groups, tasks not overlapping
-    task_levels, reserved workflow names, min_version being SemVer) are not
-    expressed and are enforced by the launcher.
+    The domain validator additionally checks that the minimum is a SemVer
+    value and reviewer names refer to instances declared in the same runtime.
     """
+
     gsd: Gsd
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     runtimes: Runtimes
-    phase_defaults: PhaseDefaults
-    agent_levels: dict[AgentName, Level]
-    agent_efforts: dict[AgentName, Effort]
-    reviewers: dict[Text, Reviewer]
-    reviewer_efforts: ReviewerEfforts
-    reviewer_groups: dict[str, Annotated[list[str], AfterValidator(unique)]]
-    workflows: dict[WorkflowName, Workflow]
     gsd_defaults: dict[str, Any]

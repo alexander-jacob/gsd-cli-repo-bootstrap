@@ -1,81 +1,64 @@
-# GSD workflow launcher
+# GSD runtime blueprint launcher
 
-Open Claude Code or Codex with project-owned model, effort and external reviewer presets. GSD remains responsible for running its workflows; this launcher configures the session and opens the CLI.
+Open Claude Code or Codex with a named project configuration. A **blueprint** specifies the session model and effort, defaults for five GSD phases and optional exceptions for individual agents. Each runtime has its own blueprint names and one reviewer configuration. Start the GSD skill you want inside the session.
 
-```sh
-gsd-cli plan codex              # medium is the default
-gsd-cli plan claude high
-gsd-cli exec codex low
-gsd-cli exec claude --secure
-gsd-cli exec codex -- --resume  # child arguments go after --
-gsd-cli check                  # verify both GSD installations
-gsd-cli check codex            # verify only Codex GSD
-gsd-cli plan codex --config    # preview config and GSD resolution; print and exit
-```
+## Quick start
 
-Workflow and runtime are always explicit. You can define additional workflow names, such as `ship`, in your project policy. No GSD command is invoked automatically.
-
-`--config` works with every workflow preset. It shows the workflow, requested session model and effort, and a compact table comparing configured models and efforts with installed GSD resolution for agents in the workflow's phases. `✓`, `✗`, and `?` mean match, mismatch, and insufficient evidence. Add `--details` for the full resolver evidence and effective JSON. Interactive terminals get colored checks and syntax-colored JSON; redirected output stays plain. The selected installed GSD resolver reads a temporary configuration snapshot; project files, installed agents, and launch logs stay unchanged. No AI session runs. Node is required for resolver queries. An incomplete query prints available configuration and exits 1; known setting differences are findings, not command failures. See [preview details](docs/LAUNCHER.md#configuration-preview).
-
-## Install and initialize
-
-Requires Python 3.10+, a POSIX system (Linux/macOS), pipx, Git for Git migration, GSD, and the CLI you intend to launch. Click and Pydantic are installed inside the pipx environment.
+Use Python 3.10+ on Linux or macOS, the desired AI CLI and a compatible GSD installation for that runtime. Preview uses Node. Install from the launcher checkout, then initialize your GSD project.
 
 ```sh
-pipx install /path/to/gsd-cli-repo-bootstrap
+pipx install .
 cd /path/to/your/gsd-project
 gsd-cli init
+gsd-cli policy
+gsd-cli check
 ```
 
-For an existing project, follow the [installation, migration and first-use walkthrough](MIGRATION.md). It includes replacing the old single-file launcher. `task install` now uses pipx; copying the `gsd-cli` source wrapper alone no longer works.
+The unqualified `gsd-cli check` checks both installed GSD bundles. If you use just one runtime, run `gsd-cli check codex` or `gsd-cli check claude`; only that runtime’s GSD installation must pass for its launch.
 
-`init` loads the complete [bundled JSON policy](gsd_cli/data/default-config.json) through package resources. It preserves compatible legacy model/reviewer settings and leaves the existing working config untouched. Review and commit the generated policy, default and ignore changes. For a previously tracked working config, init stages its removal from the index while keeping the local file. It makes no commit. A `.planning/` directory without a config file, such as one created only by `gsd-map-codebase`, is enough for `init`.
+An existing `.planning/` directory is enough to initialize. Review the generated `gsd-cli.config.json`, `.planning/config.default.json` and `.gitignore`. If Git tracked `.planning/config.json`, init stages its removal from the index and preserves the working file. For an existing version-one policy, follow the [manual conversion walkthrough](MIGRATION.md#convert-a-version-one-project-policy).
 
-| File | Purpose | Git |
-|---|---|---|
-| `gsd-cli.config.json` | Complete project model/workflow/reviewer policy | Track |
-| `.planning/config.default.json` | Persistent GSD settings outside launcher ownership | Track |
-| `.planning/config.json` | Effective configuration read and modified by GSD | Ignore |
-| `.planning/.gsd-cli-sync.json` | Local baseline and previous ownership | Ignore |
+To discover the available names, enter either runtime alone. These commands print the choices and exit 1. The starter lists `high, low, medium` for each runtime.
 
-Before each launch, the launcher captures persistent GSD edits into the tracked default. Switching workflows, models or runtimes does not itself change that default. Changes to the default and local config merge when independent; conflicting edits stop the launch and name the affected paths. A private recovery journal protects against interpreting partially completed writes as new user changes.
+```sh
+gsd-cli codex
+gsd-cli claude
+```
 
-## GSD minimum version
+Preview, then open your chosen runtime. These examples use the CLI’s normal permissions. **Omitting `--secure` adds the full permission bypass on either runtime.**
 
-Project policy requires `"gsd": {"min_version": "1.21.0"}`. The bundled default uses 1.21.0 as an editable project requirement, not a proven technical compatibility minimum. Older project policies must add this field explicitly; upgrades never overwrite their policy.
+```sh
+gsd-cli codex medium --config --secure
+gsd-cli claude medium --config --secure
+gsd-cli codex medium --secure
+gsd-cli claude medium --secure
+```
 
-Every workflow launch checks the selected runtime before capture, recovery or launch logging. An older, missing, unreadable or incomplete GSD installation **blocks launch**. `--secure` does not bypass this gate. `gsd-cli check [claude|codex]` reports installed version, required minimum and installation path; omitting the runtime checks both and exits nonzero if either fails.
+Put child options after the first `--`. For example, `gsd-cli codex medium --secure -- --help` prepares the project and invokes Codex help. Run from the destination project because forwarded Codex directory switches are rejected.
 
-Checks are offline and read-only. Explicit `CLAUDE_CONFIG_DIR`/`CODEX_HOME` overrides take precedence, followed by a project-local GSD bundle, then the runtime's global bundle. A broken selected installation does not fall back to another copy. Forwarded Codex `-C`/`--cd` is rejected; run the launcher from the destination project so checks and configuration target the same location. See [version checking](docs/LAUNCHER.md#gsd-version-checks) for discovery and upgrade details.
-
-## Default policy
-
-| Level | Claude session / agent alias | Codex session / agent model | Session effort |
+| Starter blueprint | Claude session / phase agent | Codex session / phase agent | Session and phase effort |
 |---|---|---|---|
 | low | `claude-sonnet-5-5` / `sonnet` | `gpt-6-luna` | low |
 | medium | `claude-opus-5-5` / `opus` | `gpt-6.1-sol` | medium |
 | high | `claude-fable-5-2` / `fable` | `gpt-6-astra` | high |
 
-Codex high execution deliberately uses medium **session** effort. Agent effort and reviewer effort are independent. Planning/discussion/research follow the selected plan level; execution follows the selected exec level. Verification stays high, and other phases reset to their explicit defaults each launch. Per-agent pins take precedence over phase levels.
+An agent override can change its model, effort or both. The starter executor and verifier use their respective execution and verification phase settings. The reviewer roster stays the same across a runtime’s blueprints. OpenCode/OpenRouter reviewers are metered. [Configuration guide](docs/configuration.md)
 
-The [performance/cost audit](docs/nodes/2026-11-10-gsd-performance-cost-audit.md) explains the evidence behind the defaults. Planner/checker/integration/synthesis/security reasoning gets high effort; extraction and mapping use lower or medium effort. Mapper and intel models use medium; compact GSD content is seeded on initialization. These are reasoned starting choices, not measured quality or cost guarantees.
+## What a launch writes
 
-Claude launches now pass `--effort`. **Claude subagent effort also depends on installed agent frontmatter**: project config alone does not update it. The launcher warns and never modifies your global agent definitions. See the [effort synchronization instructions](docs/LAUNCHER.md#effort-and-gsd-routing).
+The launcher merges persistent GSD edits into the tracked default, retaining a private local baseline for conflict detection. A Claude launch also copies covered installed agent definitions to `.claude/agents/`, sets their model and effort frontmatter and maintains exact ignore rules. Preview shows prospective creation, update and cleanup. Codex uses config overrides and leaves those Claude files in place. For conflicts and recovery, see the [launcher reference](docs/LAUNCHER.md#automatic-capture-and-recovery).
 
-Each preset explicitly selects the opposite runtime's reviewer plus Grok and Gemini. DeepSeek is defined but inactive. Reviewers remain independent of the selected model level. This choice does not detect who authored an earlier plan; configure another preset if you need a different roster. OpenCode/OpenRouter reviewers are metered.
-
-The starter reviewers use Fable 5.2, GPT-6 Astra, Grok 4.7 and Gemini 4 Carbon; the optional DeepSeek reviewer uses V4.1 Flash 1017. Carbon targets demanding reviews and can use more reasoning tokens than Argon. These starter updates do not overwrite existing project policy; update the model IDs in `gsd-cli.config.json` for existing projects.
-
-Claude planning uses normal permissions; Codex planning and both execution presets bypass approval prompts by default. `--secure` suppresses the launcher-inserted bypass. Custom workflows must state permissions explicitly. Billing guards check environment variables for both the session and selected reviewer adapters.
+The selected GSD installation must satisfy `gsd.min_version` (shipped floor `1.21.0`). Use `gsd-cli check codex` or `gsd-cli check claude` to identify its location. Previews compare the policy to installed GSD resolution. Claude discovery has confirmed the generated project model, but actual Claude subagent effort remains unverified. [Check commands and evidence](docs/checks.md)
 
 ## Inspection and development
 
 ```sh
-gsd-cli --version              # installed gsd-cli version (also -V)
+gsd-cli --version
 gsd-cli status
-gsd-cli policy                  # validate the project policy file; --json prints it
-gsd-cli schema [NAME]          # JSON Schemas for machine-readable output
-gsd-cli sessions [claude|codex] [--pick [N]]
+gsd-cli policy --json
+gsd-cli codex medium --config --details
+gsd-cli sessions codex
+gsd-cli schema preview
 
 python3 -m venv .venv
 . .venv/bin/activate
@@ -83,9 +66,7 @@ python -m pip install -e '.[test]'
 python -m pytest -n auto tests
 ```
 
-Add `--json` to `status`, `check`, `policy`, `sessions` and `WORKFLOW RUNTIME --config` for one JSON document per invocation; see [machine-readable output](docs/json-output.md). Help, status and session reports are read-only. Launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`), mode 0600, and contain policy/config snapshots. Log failures warn without blocking the launch.
-
-The [launcher guide](docs/LAUNCHER.md) covers configuration, migration, recovery and custom workflows. The [project assessment](docs/nodes/2026-11-10-project-assessment.md) records strengths and weaknesses of the original version; [implementation design](docs/nodes/2026-11-10-configurable-launcher-design.md) records the agreed direction.
+The [machine-readable output guide](docs/json-output.md) describes version-two envelopes. Private launch records live in `$XDG_STATE_HOME/gsd-cli/launches.jsonl` (normally `~/.local/state/gsd-cli/launches.jsonl`). The [performance/cost audit](docs/nodes/2026-11-10-gsd-performance-cost-audit.md) records the rationale behind earlier routing choices.
 
 ## Documentation
 

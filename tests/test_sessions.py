@@ -509,6 +509,29 @@ class CheckTests(SessionsTestCase):
         self.checked(self.session(children=[reviewer]), launch)
         self.assertEqual(reviewer.marks, [])
 
+    def test_blueprint_review_snapshot_survives_switch_and_ambiguous_adapter(self):
+        def run_review(snapshot):
+            launch = {**self.launch(), 'blueprint': 'careful', 'review': snapshot}
+            launch.pop('profile')
+            child = self.child(kind='reviewer', requested=None, model='claude-opus-5-5', effort='low')
+            session = self.session(children=[child])
+            session.launch = launch
+            self.checked(session, launch)
+            self.assertIn('blueprint: careful', self.gsd.render(session)[0])
+            self.assertEqual(self.gsd.run_model(session).launch.blueprint, 'careful')
+            return child
+        review = {'default_reviewers': ['mine'], 'reviewer_instances': {
+            'mine': {'cli': 'claude', 'model': 'sonnet'},
+            'other': {'cli': 'claude', 'model': 'fable'}}, 'effort': {'claude': 'low'}}
+        self.config_path.write_text(json.dumps({'review': {'default_reviewers': ['other']}}))
+        child = run_review(review)
+        self.assertEqual(child.marks, ['! mine expects sonnet'])
+        self.assertIn('reviewer mine', self.gsd.render(child)[0])
+        review['default_reviewers'].append('other')
+        child = run_review(review)
+        self.assertFalse(any(mark.startswith('!') for mark in child.marks))
+        self.assertNotIn('reviewer mine', self.gsd.render(child)[0])
+
     def test_check_without_resolver_sets_unavailable(self):
         agent = self.child(requested="opus", model="claude-sonnet-5-5")
         resolver = self.checked(self.session(children=[agent]), self.launch())
@@ -819,6 +842,45 @@ class SessionsCommandTests(SessionsTestCase):
         self.assertIsNone(child.launch)
         self.assertEqual(env.data.older, [])
 
+    def test_two_blueprints_report_their_own_recorded_reviewers(self):
+        install_resolver(self.home, self.bin, {})
+        for index, blueprint in enumerate(('fast', 'careful')):
+            start = START + timedelta(hours=index)
+            reviewer = blueprint + '-review'
+            effort = ('low', 'high')[index]
+            model = ('sonnet', 'opus')[index]
+            review = {'default_reviewers': [reviewer], 'reviewer_instances': {
+                reviewer: {'cli': 'claude', 'model': model}}, 'effort': {'claude': effort}}
+            launch_record(self.root / 'state', self.project, 'claude', None, start - timedelta(seconds=1),
+                          'claude-opus-5-5', 'high', blueprint=blueprint, review=review)
+            claude_session(self.home, self.project, blueprint, start, 'claude-opus-5-5', 'high')
+            claude_session(self.home, self.project, reviewer, start + timedelta(seconds=15), 'claude-opus-5-5', 'high',
+                           entrypoint='sdk-cli', prompt='# Cross-AI Plan Review Request')
+        env, _ = self.json_sessions('--json')
+        latest, older = env.data.sessions
+        self.assertEqual((latest.launch.blueprint, older.launch.blueprint), ('careful', 'fast'))
+        self.assertIsNone(older.launch.profile)
+        self.assertEqual(latest.children[0].marks, [])
+        self.assertEqual(older.children[0].marks, ['! fast-review expects sonnet', '! fast-review expects effort low'])
+        self.assertEqual((older.children[0].model, older.children[0].effort), ('claude-opus-5-5', 'high'))
+
+    def test_shared_reviewer_adapter_checks_effort_and_skips_inactive_adapter(self):
+        review = {'default_reviewers': ['first', 'second'], 'reviewer_instances': {
+            'first': {'cli': 'claude', 'model': 'sonnet'}, 'second': {'cli': 'claude', 'model': 'opus'},
+            'unused': {'cli': 'codex', 'model': 'other-model'}}, 'effort': {'claude': 'low', 'codex': 'high'}}
+        launch_record(self.root / 'state', self.project, 'claude', None, START - timedelta(seconds=1),
+                      'claude-opus-5-5', 'high', blueprint='careful', review=review)
+        claude_session(self.home, self.project, 'parent', START, 'claude-opus-5-5', 'high')
+        claude_session(self.home, self.project, 'claude-review', START + timedelta(seconds=15),
+                       'claude-fable-5-1', 'high', entrypoint='sdk-cli', prompt='# Cross-AI Plan Review Request')
+        codex_session(self.home, self.project, 'inactive-review', START + timedelta(seconds=30),
+                      'gpt-6-astra', 'low', source='exec')
+        env, _ = self.json_sessions('--json')
+        active, inactive = env.data.sessions[0].children
+        self.assertEqual(active.marks, ['! claude expects effort low'])
+        self.assertTrue(active.mismatch)
+        self.assertEqual(inactive.marks, [])
+
     def test_json_marks_mismatch(self):
         claude_session(self.home, self.project, "s1", START, "claude-opus-5-5", "medium")
         launch_record(self.root / "state", self.project, "claude", "exec/medium",
@@ -952,7 +1014,8 @@ class SessionsCommandTests(SessionsTestCase):
 
 class LaunchLogTests(SessionsTestCase):
     def record(self):
-        self.gsd.record_launch(self.project, "claude", "exec-opus", "claude-opus-5-5", [], {})
+        self.gsd.record_launch(self.project, "claude", "low", "claude-opus-5-5", [], {},
+                               effort="medium", review={}, policy={})
 
     def test_launch_log_is_private(self):
         log = self.gsd.launch_log_path()

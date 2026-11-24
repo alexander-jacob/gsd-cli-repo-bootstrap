@@ -10,7 +10,8 @@ from importlib.resources import files
 from pathlib import Path
 
 from . import config
-from .versions import check_installation, format_result
+from .policy import is_agent_name
+from .versions import CheckResult, check_installation, format_result
 
 QUERY_TIMEOUT = 20
 OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -118,10 +119,35 @@ def run_bridge(installation: Path, runtime: str, snapshots: dict[str, dict],
     return payload, stderr
 
 
-def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
-    version = check_installation(root, runtime, minimum)
-    result = {'installation': {**asdict(version), 'directory': str(version.directory)},
-              'catalog': {}, 'context': {}, 'agents': {}, 'diagnostics': [], 'complete': False}
+def load_catalog(installation: Path) -> dict:
+    """Read and validate the manifest used by the selected GSD installation."""
+    path = installation / 'bin/shared/model-catalog.json'
+    manifest = config.read_json(path)
+    agents = manifest.get('agents')
+    if not isinstance(agents, dict) or not agents:
+        raise config.ConfigError(f'{path}: expected a nonempty agents object')
+    for name, metadata in agents.items():
+        if not is_agent_name(name):
+            raise config.ConfigError(f'{path}: agents.{name!r}: expected a GSD agent name')
+        if not isinstance(metadata, dict):
+            raise config.ConfigError(f'{path}: invalid metadata for agent {name!r}')
+        phase = metadata.get('phaseType')
+        if phase is not None and (not isinstance(phase, str) or not phase.strip()):
+            raise config.ConfigError(f'{path}: agents.{name}.phaseType must be a nonempty string when set')
+    runtime_tiers = manifest.get('runtimeTierDefaults', {})
+    if not isinstance(runtime_tiers, dict) or not isinstance(runtime_tiers.get('claude', {}), dict):
+        raise config.ConfigError(f'{path}: invalid runtime tier metadata')
+    return manifest
+
+
+def empty_inspection(version: CheckResult) -> dict:
+    return {'installation': {**asdict(version), 'directory': str(version.directory)},
+            'catalog': {}, 'context': {}, 'agents': {}, 'diagnostics': [], 'complete': False}
+
+
+def inspect(root: Path, data: dict, runtime: str, minimum: str, *, version: CheckResult | None = None) -> dict:
+    version = version or check_installation(root, runtime, minimum)
+    result = empty_inspection(version)
     diagnostics = result['diagnostics']
     if not version.ok:
         diagnostics.append(format_result(version))
@@ -131,17 +157,11 @@ def inspect(root: Path, data: dict, runtime: str, minimum: str) -> dict:
         diagnostics.append('Node is unavailable; install Node to query the installed GSD resolver')
         return result
     try:
-        manifest = config.read_json(version.directory / 'bin/shared/model-catalog.json')
-        catalog = manifest.get('agents')
-        if not isinstance(catalog, dict) or not catalog or any(
-                not isinstance(k, str) or not k or not isinstance(v, dict) for k, v in catalog.items()):
-            raise config.ConfigError('Installed GSD agent catalog is unavailable or malformed')
+        manifest = load_catalog(version.directory)
+        catalog = manifest['agents']
         result['catalog'] = catalog
         # GSD model-catalog.cjs derives MODEL_ALIAS_MAP from these same entries.
-        runtime_tiers = manifest.get('runtimeTierDefaults', {})
-        if not isinstance(runtime_tiers, dict) or not isinstance(runtime_tiers.get('claude', {}), dict):
-            raise config.ConfigError('Installed GSD catalog runtime tier metadata is malformed')
-        tiers = runtime_tiers.get('claude', {})
+        tiers = manifest.get('runtimeTierDefaults', {}).get('claude', {})
         result['aliases'] = {tier: entry['model'] for tier, entry in tiers.items()
                              if isinstance(entry, dict) and isinstance(entry.get('model'), str)}
         env = query_environment(root, runtime)

@@ -1,14 +1,18 @@
 """Synchronization and migration exercise real temporary files and Git indexes."""
 import copy
 import fcntl
+import hashlib
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 from gsd_cli import config
-from gsd_cli.policy import load_default, resolve
+from gsd_cli.policy import PolicyError, load_default
+from resolver_fixtures import AGENT_PHASES
 
 
 class MergeTests(unittest.TestCase):
@@ -86,6 +90,24 @@ class ConfigTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.environment = mock.patch.dict('os.environ', {
+            'HOME': str(self.root), 'CODEX_HOME': str(self.root / '.codex'),
+            'CLAUDE_CONFIG_DIR': str(self.root / '.claude'),
+        })
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.catalog = {'agents': {name: {'phaseType': phase} for name, phase in AGENT_PHASES.items()}}
+        installed = tempfile.TemporaryDirectory()
+        self.addCleanup(installed.cleanup)
+        self.installations = {r: Path(installed.name) / r / 'gsd-core' for r in ('claude', 'codex')}
+        for installation in self.installations.values():
+            (installation / 'bin/shared').mkdir(parents=True)
+            self.put(installation / 'bin/shared/model-catalog.json', self.catalog)
+        self.sources = self.installations['claude'].parent / 'agents'
+        self.sources.mkdir()
+        for name in (*self.catalog['agents'], 'gsd-only-claude'):
+            (self.sources / (name + '.md')).write_bytes(
+                f'---\r\nname: {name}\r\n---\r\n'.encode() + b'binary body \xff\r\n')
         (self.root / '.planning').mkdir()
         self.working = self.root / '.planning/config.json'
         self.default = self.root / '.planning/config.default.json'
@@ -103,13 +125,17 @@ class ConfigTests(unittest.TestCase):
         config.initialize(self.root)
         self.policy = self.get(self.policy_file)
 
-    def sync(self, workflow='plan', runtime='codex', level='medium'):
+    def sync(self, runtime='codex', blueprint='medium', catalog=None):
         self.put(self.policy_file, self.policy)
-        return config.synchronize(self.root, self.policy, resolve(self.policy, workflow, runtime, level))
+        installation = self.installations[runtime]
+        self.put(installation / 'bin/shared/model-catalog.json', catalog or self.catalog)
+        return config.synchronize(self.root, self.policy, runtime, blueprint, installation)
 
-    def preview(self):
+    def preview(self, runtime='codex', blueprint='medium'):
         self.assertTrue(hasattr(config, 'preview'), 'read-only preview is not implemented')
-        return config.preview(self.root, self.policy, resolve(self.policy, 'plan', 'codex', 'medium'))
+        installation = self.installations[runtime]
+        self.put(installation / 'bin/shared/model-catalog.json', self.catalog)
+        return config.preview(self.root, self.policy, runtime, blueprint, installation)
 
     def file_snapshot(self):
         return {str(p): (p.read_bytes(), p.stat().st_mtime_ns)
@@ -188,7 +214,7 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.assertEqual(self.working.read_bytes(), before)
         self.assertNotIn('_auto_chain_active', self.get(self.default)['workflow'])
-        self.policy['runtimes']['codex']['medium']['session_model'] = 'project-model'
+        self.policy['runtimes']['codex']['blueprints']['medium']['session']['model'] = 'project-model'
         self.put(self.policy_file, self.policy)
         config.initialize(self.root)
         self.assertEqual(self.get(self.policy_file), self.policy)
@@ -197,12 +223,12 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.sync()
         before = self.default.read_bytes()
-        self.sync('exec', 'claude', 'high')
+        self.sync('claude', 'high')
         self.assertEqual(self.default.read_bytes(), before)
         working = self.get(self.working)
         working['custom']['keep'] = False
         self.put(self.working, working)
-        data, paths = self.sync()
+        data, paths, _, _ = self.sync()
         self.assertFalse(self.get(self.default)['custom']['keep'])
         self.assertIn('custom.keep', paths)
         self.assertTrue(data['workflow']['_auto_chain_active'])
@@ -216,7 +242,7 @@ class ConfigTests(unittest.TestCase):
         working = self.get(self.working)
         working['from_gsd'] = 2
         self.put(self.working, working)
-        data, _ = self.sync()
+        data, _, _, _ = self.sync()
         self.assertEqual((data['from_git'], data['from_gsd']), (1, 2))
 
     def test_conflict_does_not_change_files(self):
@@ -239,9 +265,12 @@ class ConfigTests(unittest.TestCase):
         w = self.get(self.working)
         w['model_overrides']['custom-agent'] = 'custom-model'
         self.put(self.working, w)
-        del self.policy['agent_levels']['gsd-doc-classifier']
-        del self.policy['reviewers']['deepseek-review']
-        data, _ = self.sync()
+        section = self.policy['runtimes']['codex']
+        del section['blueprints']['medium']['agents']['gsd-doc-classifier']
+        self.catalog['agents']['gsd-doc-classifier']['phaseType'] = 'unknown'
+        del section['review']['reviewer_instances']['deepseek-review']
+        section['review']['default_reviewers'] = []
+        data, _, _, _ = self.sync()
         self.assertNotIn('gsd-doc-classifier', data['model_overrides'])
         self.assertNotIn('deepseek-review', data['review']['reviewer_instances'])
         self.assertEqual(data['model_overrides']['custom-agent'], 'custom-model')
@@ -266,9 +295,9 @@ class ConfigTests(unittest.TestCase):
         self.default.unlink()
         with self.assertRaisesRegex(config.ConfigError, 'config.default.json'):
             self.sync()
-        d['models'] = {'execution': 'opus'}
+        d['model_overrides'] = {'gsd-executor': 'opus'}
         self.put(self.default, d)
-        with self.assertRaisesRegex(config.ConfigError, 'models.execution'):
+        with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-executor'):
             self.sync()
 
     def test_boolean_default_edit_survives_complete_sync(self):
@@ -278,7 +307,7 @@ class ConfigTests(unittest.TestCase):
         d = self.get(self.default)
         d['number'] = True
         self.put(self.default, d)
-        data, _ = self.sync()
+        data, _, _, _ = self.sync()
         self.assertIs(data['number'], True)
         self.assertIs(self.get(self.default)['number'], True)
 
@@ -293,6 +322,330 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(config.ConfigError, 'baseline'):
             self.sync()
 
+    def interrupt_agent_removal(self):
+        self.init()
+        self.sync('claude')
+        self.retired = '.claude/agents/gsd-doc-classifier.md'
+        self.remaining = '.claude/agents/gsd-executor.md'
+        section = self.policy['runtimes']['claude']['blueprints']['high']
+        section['agents'].pop('gsd-doc-classifier', None)
+        self.catalog['agents']['gsd-doc-classifier']['phaseType'] = 'unknown'
+        original = config.atomic_write
+        applied = []
+        def interrupt(path, content, **kwargs):
+            if path != self.root / config.JOURNAL:
+                if applied:
+                    raise OSError('interrupt after first target')
+                applied.append(path)
+            return original(path, content, **kwargs)
+        with mock.patch.object(config, 'atomic_write', side_effect=interrupt), self.assertRaises(OSError):
+            self.sync('claude', 'high')
+        self.assertEqual(len(applied), 1)
+
+    def test_recover_partial_agent_removal(self):
+        self.interrupt_agent_removal()
+        config.recover(self.root)
+        self.assertFalse((self.root / self.retired).exists())
+        after = (self.root / self.remaining).read_bytes()
+        self.assertIn(b'body \xff\r\n', after)
+        expected = self.get(self.working)['model_overrides']['gsd-executor']
+        self.assertIn(f'model: {expected}\r\n'.encode(), after)
+        owned = self.get(self.state)['claude_agents']
+        self.assertNotIn(self.retired, owned)
+        self.assertEqual(owned[self.remaining], hashlib.sha256(after).hexdigest())
+        self.assertFalse((self.root / config.JOURNAL).exists())
+
+    def test_external_edit_blocks_recovery_before_any_operation(self):
+        self.interrupt_agent_removal()
+        (self.root / self.retired).write_bytes(b'my edited prompt')
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(config.ConfigError, 'edited externally'):
+            config.recover(self.root)
+        self.assertEqual(before, self.file_snapshot())
+
+    def inject_after_first_write(self, operation, change):
+        write = config.atomic_write
+        injected = []
+        def interleave(path, content, **kwargs):
+            write(path, content, **kwargs)
+            if path != self.root / config.JOURNAL and not injected:
+                injected.append(path)
+                change()
+        with mock.patch.object(config, 'atomic_write', side_effect=interleave), self.assertRaises(config.ConfigError):
+            operation()
+        self.assertEqual(len(injected), 1)
+        self.assertTrue((self.root / config.JOURNAL).exists())
+
+    def test_concurrent_creation_is_preserved_during_launch(self):
+        self.init()
+        target = self.root / '.claude/agents/gsd-executor.md'
+        target.parent.mkdir(parents=True)
+        self.inject_after_first_write(lambda: self.sync('claude'), lambda: target.write_bytes(b'new local agent'))
+        self.assertEqual(target.read_bytes(), b'new local agent')
+
+    def test_create_never_replaces_a_file_appearing_at_install(self):
+        self.init()
+        target = self.root / '.claude/agents/gsd-executor.md'
+        link = os.link
+        def create_before_link(source, destination):
+            if destination == target:
+                target.write_bytes(b'concurrent create')
+            return link(source, destination)
+        with mock.patch.object(os, 'link', side_effect=create_before_link), \
+                self.assertRaisesRegex(config.ConfigError, 'created externally'):
+            self.sync('claude')
+        self.assertEqual(target.read_bytes(), b'concurrent create')
+        self.assertTrue((self.root / config.JOURNAL).exists())
+
+    def test_concurrent_edit_is_preserved_during_agent_replacement(self):
+        self.init()
+        self.sync('claude')
+        target = self.root / '.claude/agents/gsd-executor.md'
+        self.inject_after_first_write(lambda: self.sync('claude', 'high'), lambda: target.write_bytes(b'local edit'))
+        self.assertEqual(target.read_bytes(), b'local edit')
+
+    def test_concurrent_edit_is_preserved_during_removal_replay(self):
+        self.interrupt_agent_removal()
+        target = self.root / self.retired
+        self.inject_after_first_write(lambda: config.recover(self.root), lambda: target.write_bytes(b'keep me'))
+        self.assertEqual(target.read_bytes(), b'keep me')
+
+    def test_concurrent_git_add_protects_agent_during_removal_replay(self):
+        self.git('init', '-q')
+        self.interrupt_agent_removal()
+        target = self.root / self.retired
+        previous = target.read_bytes()
+        self.inject_after_first_write(lambda: config.recover(self.root), lambda: self.git('add', '-f', self.retired))
+        self.assertEqual(target.read_bytes(), previous)
+        self.assertEqual(self.git('ls-files', self.retired).strip(), self.retired)
+
+    def test_concurrent_staging_preserved_during_migration(self):
+        self.git('init', '-q')
+        self.git('add', config.WORKING)
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture')
+        def stage():
+            self.put(self.working, {'edited': True})
+            self.git('add', config.WORKING)
+        self.inject_after_first_write(self.init, stage)
+        self.assertEqual(json.loads(self.git('show', ':' + config.WORKING)), {'edited': True})
+
+    def test_recover_visible_postimages_syncs_directories_before_removing_journal(self):
+        self.init()
+        journal = self.root / config.JOURNAL
+        unlink = Path.unlink
+        def interrupt(path, *args, **kwargs):
+            if path == journal:
+                raise OSError('interrupted with final target already visible')
+            return unlink(path, *args, **kwargs)
+        with mock.patch.object(Path, 'unlink', new=interrupt), self.assertRaises(OSError):
+            self.sync('claude')
+        synced = []
+        with mock.patch.object(config, 'atomic_write', side_effect=AssertionError('unexpected rewrite')), \
+                mock.patch.object(config, 'fsync_directory', side_effect=lambda p: synced.append((p, journal.exists()))):
+            config.recover(self.root)
+        for directory in (self.root, self.root / '.planning', self.root / '.claude', self.root / '.claude/agents'):
+            self.assertIn((directory, True), synced)
+        self.assertIn((self.root / '.planning', False), synced)
+
+    def test_claude_preview_double_preparation_and_codex_preservation(self):
+        self.git('init', '-q')
+        self.init()
+        original = (self.root / '.gitignore').read_bytes() + b'# comment \xff\r\n'
+        (self.root / '.gitignore').write_bytes(original)
+        before = self.file_snapshot()
+        proposed = self.preview('claude')
+        self.assertEqual(before, self.file_snapshot())
+        self.assertFalse((self.root / '.claude').exists())
+        self.assertEqual(proposed, self.sync('claude'))
+        generated = self.root / '.claude/agents/gsd-executor.md'
+        self.assertEqual(proposed[3]['gsd-executor']['action'], 'create')
+        ignore = self.root / '.gitignore'
+        self.assertTrue(ignore.read_bytes().startswith(original))
+        self.assertEqual(self.git('check-ignore', str(generated)).strip(), str(generated))
+        custom = self.root / '.claude/agents/custom.md'
+        custom.write_bytes(b'custom prompt')
+        self.assertIn('custom.md', self.git('ls-files', '--others', '--exclude-standard'))
+        ignore.write_bytes(b'# my prefix\r\n' + ignore.read_bytes() + b'# my suffix\xff')
+        inspected = self.preview('claude')
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (ignore, generated, self.state)}
+        self.assertEqual(inspected[3]['gsd-executor']['action'], 'unchanged')
+        self.assertEqual(inspected, self.sync('claude'))
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before})
+        owned = self.get(self.state)['claude_agents']
+        generated.write_bytes(b'edited, preserve across a Codex launch')
+        self.assertEqual(self.sync('codex')[3], {})
+        self.assertEqual(generated.read_bytes(), b'edited, preserve across a Codex launch')
+        self.assertEqual(self.get(self.state)['claude_agents'], owned)
+        self.assertEqual(before[ignore], (ignore.read_bytes(), ignore.stat().st_mtime_ns))
+
+    def test_ignore_rules_from_fresh_checkout_do_not_grant_ownership(self):
+        self.git('init', '-q')
+        self.init()
+        self.sync('claude')
+        self.git('add', '.gitignore', config.DEFAULT, config.POLICY)
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture')
+        with tempfile.TemporaryDirectory() as directory:
+            clone = Path(directory)
+            self.git('clone', '-q', str(self.root), str(clone))
+            self.assertFalse((clone / config.STATE).exists())
+            self.assertFalse((clone / '.claude').exists())
+            args = (clone, self.policy, 'claude', 'medium', self.installations['claude'])
+            plan = config.preview(*args)[3]
+            self.assertEqual(plan['gsd-executor']['action'], 'create')
+            destination = clone / plan['gsd-executor']['destination']
+            destination.parent.mkdir(parents=True)
+            destination.write_bytes(b'hand-written file')
+            with self.assertRaisesRegex(config.ConfigError, 'Unowned'):
+                config.synchronize(*args)
+            self.assertEqual(destination.read_bytes(), b'hand-written file')
+            destination.unlink()
+            config.synchronize(*args)
+            self.assertIn(destination.relative_to(clone).as_posix(), config.load_state(clone)['claude_agents'])
+
+    def test_edits_inside_ignore_block_conflict(self):
+        self.init()
+        self.sync('claude')
+        ignore = self.root / '.gitignore'
+        ignore.write_bytes(ignore.read_bytes().replace(b'/.claude/agents/gsd-executor.md\n', b''))
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(config.ConfigError, 'Edited.*.gitignore'):
+            self.preview('claude')
+        self.assertEqual(self.file_snapshot(), before)
+
+    def test_nested_ignore_conflict_blocks_creation_and_subsequent_refresh(self):
+        self.git('init', '-q')
+        self.init()
+        directory = self.root / '.claude/agents'
+        directory.mkdir(parents=True)
+        nested = directory / '.gitignore'
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                if existing:
+                    nested.unlink()
+                    self.sync('claude')
+                nested.write_text('!gsd-executor.md\n')
+                before = self.file_snapshot()
+                with self.assertRaisesRegex(config.ConfigError, 'expose.*gsd-executor.md'):
+                    self.preview('claude')
+                self.assertEqual(self.file_snapshot(), before)
+
+    def test_preparation_rejects_concurrent_agent_and_catalog_changes(self):
+        self.init()
+        self.sync('claude')
+        directory = self.root / '.claude/agents'
+        catalog = self.installations['claude'] / 'bin/shared/model-catalog.json'
+        for target in (self.sources / 'gsd-executor.md', directory / 'gsd-executor.md',
+                       directory / 'duplicate.md', directory / '.gitignore', catalog):
+            for write in (False, True):
+                with self.subTest(target=target, write=write):
+                    original = target.read_bytes() if target.exists() else None
+                    def changing(*args):
+                        plan = original_plan(*args)
+                        target.write_bytes((original or b'') + b'\n')
+                        return plan
+                    original_plan = config.plan_agents
+                    fn = config.synchronize if write else config.preview
+                    try:
+                        with mock.patch.object(config, 'plan_agents', side_effect=changing), \
+                                self.assertRaisesRegex(config.ConfigError, 'changed during preparation'):
+                            fn(self.root, self.policy, 'claude', 'high', self.installations['claude'])
+                        self.assertFalse((self.root / config.JOURNAL).exists())
+                    finally:
+                        if original is None:
+                            target.unlink()
+                        else:
+                            target.write_bytes(original)
+
+    def test_codex_recovers_pending_claude_transaction_and_preview_leaves_it_pending(self):
+        self.interrupt_agent_removal()
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(config.ConfigError, 'Pending configuration recovery'):
+            self.preview('codex')
+        self.assertEqual(self.file_snapshot(), before)
+        self.sync('codex')
+        self.assertFalse((self.root / config.JOURNAL).exists())
+        self.assertFalse((self.root / self.retired).exists())
+        self.assertNotIn(self.retired, self.get(self.state)['claude_agents'])
+        self.assertEqual(self.get(self.state)['claude_agents'][self.remaining],
+                         hashlib.sha256((self.root / self.remaining).read_bytes()).hexdigest())
+
+    def test_invalid_journal_paths_and_unowned_deletions_block_before_replay(self):
+        self.interrupt_agent_removal()
+        path = self.root / config.JOURNAL
+        original = self.get(path)
+        for name in ('.claude/agents/../config.md', '.claude/agents/user.md', config.POLICY,
+                     '.claude/agents/gsd-never-owned.md'):
+            with self.subTest(name=name):
+                journal = copy.deepcopy(original)
+                journal['files'][name] = journal['files'].pop(self.retired)
+                self.put(path, journal)
+                before = self.file_snapshot()
+                with self.assertRaisesRegex(config.ConfigError, 'recovery|ownership'):
+                    config.recover(self.root)
+                self.assertEqual(self.file_snapshot(), before)
+
+    def test_recovery_revalidates_git_index_ignore_rules_and_project_identities(self):
+        self.git('init', '-q')
+        self.interrupt_agent_removal()
+        nested = self.root / '.claude/agents/.gitignore'
+        collision = nested.parent / 'duplicate.md'
+        for issue in ('index', 'ignore', 'identity'):
+            with self.subTest(issue=issue):
+                if issue == 'index':
+                    self.git('add', '-f', self.retired)
+                elif issue == 'ignore':
+                    nested.write_text('!gsd-executor.md\n')
+                else:
+                    collision.write_text('---\nname: gsd-executor\n---\nnew agent')
+                before = self.file_snapshot()
+                with self.assertRaisesRegex(config.ConfigError, 'Git-tracked|expose|Duplicate'):
+                    config.recover(self.root)
+                self.assertEqual(self.file_snapshot(), before)
+                if issue == 'index':
+                    self.git('rm', '--cached', self.retired)
+                else:
+                    (nested if issue == 'ignore' else collision).unlink()
+        config.recover(self.root)
+
+    def test_git_directory_exclusion_can_disable_nested_exception(self):
+        self.git('init', '-q')
+        (self.root / '.git/info/exclude').write_text('/.claude/\n')
+        self.init()
+        agents = self.root / '.claude/agents'
+        agents.mkdir(parents=True)
+        (agents / '.gitignore').write_text('!gsd-executor.md\n')
+        self.sync('claude')
+        generated = '.claude/agents/gsd-executor.md'
+        self.assertEqual(self.git('check-ignore', generated).strip(), generated)
+
+    def test_catalog_errors_are_distinct_from_collisions(self):
+        self.init()
+        catalog = self.installations['claude'] / 'bin/shared/model-catalog.json'
+        catalog.unlink()
+        with self.assertRaisesRegex(config.CatalogError, 'model-catalog.json'):
+            config.preview(self.root, self.policy, 'claude', 'medium', self.installations['claude'])
+        self.put(catalog, self.catalog)
+        path = self.root / '.claude/agents/gsd-executor.md'
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'handwritten')
+        with self.assertRaisesRegex(config.ConfigError, 'Unowned') as raised:
+            self.preview('claude')
+        self.assertNotIsInstance(raised.exception, config.CatalogError)
+
+    def test_v1_replay_preserves_text_preconditions_and_index_migration(self):
+        self.git('init', '-q')
+        self.git('add', config.WORKING)
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'fixture')
+        self.default.write_bytes(b'{}\r\n')
+        journal = self.root / config.JOURNAL
+        self.put(journal, {'version': 1, 'untrack': True, 'files': {
+            config.DEFAULT: {'before': '{}\n', 'after': '{"new": true}\n'}}})
+        config.recover(self.root)
+        self.assertEqual(self.get(self.default), {'new': True})
+        self.assertFalse(journal.exists())
+        self.assertTrue(self.working.exists())
+        self.assertEqual(self.git('ls-files', config.WORKING), '')
+
     def test_recovery_after_partial_write(self):
         self.init()
         self.sync()
@@ -300,15 +653,15 @@ class ConfigTests(unittest.TestCase):
         w['new'] = 42
         self.put(self.working, w)
         original = config.atomic_write
-        def fail_working(path, content):
+        def fail_working(path, content, **kwargs):
             if path == self.working:
                 raise OSError('simulated interruption')
-            return original(path, content)
+            return original(path, content, **kwargs)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working):
             with self.assertRaises(OSError):
-                self.sync('exec')
+                self.sync('codex', 'high')
         self.assertTrue((self.root / '.planning/.gsd-cli-journal.json').exists())
-        self.sync('exec')
+        self.sync('codex', 'high')
         self.assertEqual(self.get(self.default)['new'], 42)
         self.assertFalse((self.root / '.planning/.gsd-cli-journal.json').exists())
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
@@ -317,12 +670,12 @@ class ConfigTests(unittest.TestCase):
         self.init()
         self.sync()
         original = config.atomic_write
-        def fail_working(path, content):
+        def fail_working(path, content, **kwargs):
             if path == self.working:
                 raise OSError('interruption')
-            return original(path, content)
+            return original(path, content, **kwargs)
         with mock.patch.object(config, 'atomic_write', side_effect=fail_working), self.assertRaises(OSError):
-            self.sync('exec')
+            self.sync('codex', 'high')
         self.put(self.working, {'external': True})
         with self.assertRaisesRegex(config.ConfigError, 'recovery'):
             self.sync()
@@ -368,15 +721,110 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(self.policy_file.exists())
         self.assertEqual(self.working.read_bytes(), before)
 
-    def test_legacy_policy_migration_preserves_models_and_custom_reviewers(self):
+    def test_starter_and_existing_unmanaged_reviewers(self):
         w = self.get(self.working)
-        w['model_policy'] = {'runtime_tiers': {'codex': {'sonnet': {'model': 'custom-sol', 'reasoning_effort': 'high'}}}}
-        w['review'] = {'reviewer_instances': {'mine': {'cli': 'codex', 'model': 'custom-review'}}, 'parallel_lanes': True}
+        w['model_policy'] = {'runtime_tiers': {'codex': {'sonnet': {'model': 'custom-sol'}}}}
+        w['review'] = {'reviewer_instances': {'mine': {'cli': 'codex', 'model': 'custom-review'}}}
         self.put(self.working, w)
         self.init()
-        self.assertEqual(self.policy['runtimes']['codex']['medium']['agent_model'], 'custom-sol')
-        self.assertEqual(self.policy['reviewers']['mine']['model'], 'custom-review')
-        self.assertTrue(self.policy['workflows']['exec']['parallel_reviews'])
+        self.assertEqual(self.policy, load_default())
+        self.assertEqual(self.policy['schema_version'], 2)
+        self.assertEqual(self.get(self.default)['review'], w['review'])
+        data, _, _, _ = self.sync()
+        self.assertNotIn('model_policy', data)
+        self.assertEqual(data['review']['reviewer_instances']['mine'], w['review']['reviewer_instances']['mine'])
+
+    def test_manual_policy_conversion_uses_existing_version_one_metadata(self):
+        self.init()
+        self.put(self.policy_file, {'schema_version': 1})
+        before = self.file_snapshot()
+        with self.assertRaisesRegex(PolicyError, 'manually convert'):
+            config.initialize(self.root)
+        self.assertEqual(self.file_snapshot(), before)
+        state = self.get(self.state)
+        state['managed'] = [['models', 'execution'], ['model_overrides', 'gsd-retired']]
+        self.put(self.state, state)
+        working = self.get(self.working)
+        working['models'] = {'execution': 'old', 'custom': 'keep'}
+        working['model_overrides'] = {'gsd-retired': 'old'}
+        self.put(self.working, working)
+        self.put(self.policy_file, self.policy)
+        self.init()
+        data, _, _, _ = self.sync()
+        self.assertEqual(data['models'], {'custom': 'keep'})
+        self.assertNotIn('gsd-retired', data['model_overrides'])
+
+    def test_switching_catalogs_retires_only_known_seed_values(self):
+        original = {'model_overrides': {'gsd-only-codex': 'one', 'gsd-only-claude': 'two', 'gsd-custom': 'keep'}}
+        self.put(self.working, original)
+        self.init()
+        self.assertEqual(self.get(self.default)['model_overrides'], original['model_overrides'])
+        codex, claude = copy.deepcopy(self.catalog), copy.deepcopy(self.catalog)
+        codex['agents']['gsd-only-codex'] = {'phaseType': 'planning'}
+        claude['agents']['gsd-only-claude'] = {'phaseType': 'research'}
+        _, captured, _, _ = self.sync('codex', catalog=codex)
+        self.assertEqual(captured, [])
+        data, captured, _, _ = self.sync('claude', catalog=claude)
+        self.assertEqual(captured, [])
+        self.assertNotIn('gsd-only-codex', data['model_overrides'])
+        self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-custom': 'keep'})
+        self.assertEqual(data['model_overrides']['gsd-custom'], 'keep')
+
+    def test_available_catalog_classifies_covered_roles_at_init(self):
+        catalog = self.root / '.codex/gsd-core/bin/shared/model-catalog.json'
+        catalog.parent.mkdir(parents=True)
+        self.put(catalog, {'agents': {'gsd-found': {'phaseType': 'verification'},
+                                      'gsd-unknown': {'phaseType': 'other'}}})
+        self.put(self.working, {'model_overrides': {'gsd-found': 'old', 'gsd-unknown': 'keep'}})
+        self.init()
+        self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-unknown': 'keep'})
+
+    def test_fifo_catalog_is_optional_for_init_and_rejected_for_preparation(self):
+        catalog = self.root / '.codex/gsd-core/bin/shared/model-catalog.json'
+        catalog.parent.mkdir(parents=True)
+        os.mkfifo(catalog)
+        script = """
+import sys
+from pathlib import Path
+from gsd_cli import config
+from gsd_cli.resolver import load_catalog
+root = Path(sys.argv[1])
+config.initialize(root)
+try:
+    load_catalog(root / '.codex/gsd-core')
+except config.ConfigError as exc:
+    print(exc)
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(self.root)],
+                                capture_output=True, text=True, timeout=3, check=True)
+        self.assertTrue(self.policy_file.exists())
+        self.assertIn(str(catalog), result.stdout)
+        self.assertIn('regular file', result.stdout)
+
+    def test_provisional_entry_conflicts_on_edit_or_missing_metadata(self):
+        self.put(self.working, {'model_overrides': {'gsd-addition': 'seed'}})
+        self.init()
+        self.catalog['agents']['gsd-addition'] = {'phaseType': 'planning'}
+        for edited in (self.default, self.working):
+            with self.subTest(edited=edited):
+                original = edited.read_bytes()
+                data = self.get(edited)
+                data['model_overrides']['gsd-addition'] = 'edited'
+                self.put(edited, data)
+                with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-addition'):
+                    self.preview()
+                edited.write_bytes(original)
+        self.working.unlink()
+        state = self.state.read_bytes()
+        self.state.unlink()
+        with self.assertRaisesRegex(config.ConfigError, 'model_overrides.gsd-addition'):
+            self.preview()
+        self.state.write_bytes(state)
+        defaults = self.get(self.default)
+        del defaults['model_overrides']['gsd-addition']
+        self.put(self.default, defaults)
+        self.sync()
+        self.assertNotIn('provisional', self.get(self.state))
 
     def test_nested_ignore_exception_allows_init(self):
         self.git('init', '-q')

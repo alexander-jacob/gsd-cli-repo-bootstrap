@@ -1,14 +1,19 @@
 """JSON-mode envelope and error handling; no network or real model calls."""
 import copy
+import fcntl
 import importlib.metadata
 import json
 import shutil
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
+from jsonschema import Draft202012Validator, ValidationError
+
 import test_gsd_cli as fixtures
-from gsd_cli import cli, models
+from gsd_cli import cli, config, models, policy
 from gsd_cli.models import CheckEnvelope, PolicyEnvelope, StatusEnvelope
+from session_fixtures import claude_session
 from test_versions import install_gsd
 
 
@@ -18,7 +23,7 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         self.assertTrue(result.stdout.endswith('\n'))
         body = json.loads(result.stdout)
         self.assertIsInstance(body, dict)
-        self.assertEqual(body['schema_version'], 1)
+        self.assertEqual(body['schema_version'], 2)
         return body
 
     def test_unknown_option_before_command_is_usage_envelope(self):
@@ -83,17 +88,17 @@ class JsonErrorTests(fixtures.GsdCliFixture):
         with mock.patch('importlib.metadata.version', side_effect=importlib.metadata.PackageNotFoundError):
             self.assertEqual(cli.package_version(), 'unknown')
 
-    def test_policy_and_schema_are_reserved_workflow_names(self):
+    def test_policy_and_schema_are_selectable_blueprint_names(self):
         self.initialize()
         path = self.project / 'gsd-cli.config.json'
         original = json.loads(path.read_text(encoding='utf-8'))
         for name in ('policy', 'schema'):
             policy = copy.deepcopy(original)
-            policy['workflows'][name] = copy.deepcopy(policy['workflows']['plan'])
+            blueprints = policy['runtimes']['claude']['blueprints']
+            blueprints[name] = copy.deepcopy(blueprints['medium'])
             path.write_text(json.dumps(policy), encoding='utf-8')
-            result = self.run_launcher('plan', 'claude', '--config')
-            self.assertEqual(result.returncode, 1, name)
-            self.assertIn('reserved or invalid workflow name', result.stderr)
+            result = self.run_launcher('claude', name)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_forwarding_after_policy_or_schema_is_rejected(self):
         for name in ('policy', 'schema'):
@@ -104,7 +109,7 @@ class JsonErrorTests(fixtures.GsdCliFixture):
     def test_policy_error_is_policy_envelope(self):
         self.initialize()
         (self.project / 'gsd-cli.config.json').write_text('{}', encoding='utf-8')
-        result = self.run_launcher('plan', 'claude', '--config', '--json')
+        result = self.run_launcher('claude', 'medium', '--config', '--json')
         self.assertEqual(result.returncode, 1)
         body = self.envelope(result)
         self.assertEqual((body['ok'], body['command'], body['error']['kind']), (False, 'preview', 'policy'))
@@ -160,22 +165,22 @@ class JsonReadTests(fixtures.GsdCliFixture):
     def test_policy_reports_local_differences(self):
         self.initialize()
         policy = self.policy()
-        policy['agent_levels']['gsd-planner'] = 'low'
+        policy['runtimes']['claude']['blueprints']['high']['agents']['gsd-planner']['effort'] = 'low'
         self.put_policy(policy)
         env = PolicyEnvelope.model_validate_json(self.run_launcher('policy', '--json').stdout, strict=True)
-        self.assertEqual(env.data.differs_from_shipped, ['agent_levels.gsd-planner'])
+        self.assertEqual(env.data.differs_from_shipped, ['runtimes.claude.blueprints.high.agents.gsd-planner.effort'])
 
     def test_invalid_policy_is_policy_error(self):
         self.initialize()
         policy = self.policy()
-        policy['phase_defaults']['planning'] = 'huge'
+        policy['runtimes']['codex']['blueprints']['low']['phases']['planning']['effort'] = 'huge'
         self.put_policy(policy)
         result = self.run_launcher('policy', '--json')
         self.assertEqual(result.returncode, 1)
         body = json.loads(result.stdout)
         self.assertEqual((body['ok'], body['command'], body['data'], body['error']['kind']),
                          (False, 'policy', None, 'policy'))
-        self.assertTrue(body['error']['message'].startswith('phase_defaults.planning'))
+        self.assertTrue(body['error']['message'].startswith('runtimes.codex.blueprints.low.phases.planning.effort'))
 
     def test_missing_policy_is_config_error(self):
         result = self.run_launcher('policy', '--json')
@@ -185,23 +190,45 @@ class JsonReadTests(fixtures.GsdCliFixture):
         self.assertIn('gsd-cli init', body['error']['message'])
 
     def snapshot_tree(self):
-        found = {}
-        for base in (self.project, self.root / 'state'):
-            for path in base.rglob('*'):
-                if path.is_file():
-                    found[str(path)] = (path.read_bytes(), path.stat().st_mtime_ns)
-        return found
+        return {str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+                for path in self.root.rglob('*') if path.is_file()}
 
-    def test_json_reads_write_nothing(self):
+    def test_read_commands_leave_held_lock_and_pending_journal_untouched(self):
         self.initialize()
-        self.assertEqual(self.run_launcher('plan', 'claude').returncode, 0)
-        (self.project / '.planning/.gsd-cli-journal.json').write_text('{}', encoding='utf-8')
+        self.assertEqual(self.run_launcher('claude', 'medium').returncode, 0)
+        journal = self.project / config.JOURNAL
+        lock = self.project / config.LOCK
+        with lock.open('r') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = self.snapshot_tree()
+            self.assert_preview_config_error('Another gsd-cli process')
+            self.assertEqual(self.snapshot_tree(), before)
+
+        journal.write_text('pending recovery', encoding='utf-8')
         before = self.snapshot_tree()
-        for args in (('status',), ('check',), ('policy',)):
-            result = self.run_launcher(*args, '--json')
-            self.assertEqual(result.returncode, 0, (args, result.stdout))
-            self.assertTrue(json.loads(result.stdout)['ok'], args)
+        self.assert_preview_config_error('Pending configuration recovery')
+        for args in (('status',), ('check',), ('policy',), ('sessions',)):
+            with self.subTest(args=args):
+                plain = self.run_launcher(*args)
+                structured = self.run_launcher(*args, '--json')
+                self.assertEqual((plain.returncode, structured.returncode), (0, 0))
+                body = json.loads(structured.stdout)
+                self.assertTrue(body['ok'])
+                if args == ('status',):
+                    self.assertTrue(json.loads(plain.stdout)['pending_recovery'])
+                    self.assertTrue(body['data']['pending_recovery'])
         self.assertEqual(self.snapshot_tree(), before)
+
+    def assert_preview_config_error(self, message):
+        args = ('codex', 'medium', '--config')
+        text = self.run_launcher(*args)
+        structured = self.run_launcher(*args, '--json')
+        self.assertEqual((text.returncode, structured.returncode), (1, 1))
+        self.assertIn(message, text.stderr)
+        body = json.loads(structured.stdout)
+        self.assertIsNone(body['data'])
+        self.assertEqual(body['error']['kind'], 'config')
+        self.assertIn(message, body['error']['message'])
 
 
 class ModelTests(unittest.TestCase):
@@ -211,8 +238,8 @@ class ModelTests(unittest.TestCase):
         self.assertIsNone(json_command([]))
         self.assertIsNone(json_command(['--json']))
         self.assertIsNone(json_command(['init']))
-        self.assertIsNone(json_command(['claude']))
-        self.assertEqual(json_command(['plan', 'claude']), 'preview')
+        self.assertIsNone(json_command(['plan', 'claude']))
+        self.assertEqual(json_command(['claude', 'medium']), 'preview')
 
     def test_failure_uses_each_command_envelope(self):
         from gsd_cli.models import ErrorEnvelope, failure
@@ -249,6 +276,92 @@ class SchemaCommandTests(fixtures.GsdCliFixture):
                 self.assertEqual(result.returncode, 0)
                 self.assertTrue(result.stdout.endswith('\n'))
                 self.assertEqual(json.loads(result.stdout), model.model_json_schema())
+
+    def test_cli_documents_validate_against_published_schemas(self):
+        names = ('check', 'error', 'policy', 'policy-file', 'preview', 'sessions', 'status')
+        validators = {}
+        for name in names:
+            with self.subTest(schema=name):
+                result = self.run_launcher('schema', name, cwd=self.root)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+                schema = json.loads(result.stdout)
+                Draft202012Validator.check_schema(schema)
+                validators[name] = Draft202012Validator(schema)
+
+        example = fixtures.LAUNCHER.parent / 'examples' / 'gsd-config-example.json'
+        for data in (policy.load_default(), json.loads(example.read_text(encoding='utf-8'))):
+            policy.validate(data)
+            self.assertEqual(data['schema_version'], 2)
+            validators['policy-file'].validate(data)
+
+        def validate_envelope(name, args, exit_code=0, error_kind=None, cwd=None):
+            plain = self.run_launcher(*args, cwd=cwd)
+            result = self.run_launcher(*args, '--json', cwd=cwd)
+            self.assertEqual((plain.returncode, result.returncode), (exit_code, exit_code))
+            self.assertEqual(result.stderr, '')
+            data = json.loads(result.stdout)
+            validators[name].validate(data)
+            self.assertEqual(data['schema_version'], 2)
+            self.assertEqual(data['command'], None if name == 'error' else name)
+            self.assertIs(data['ok'], exit_code == 0)
+            if error_kind is None:
+                self.assertIsNone(data['error'])
+                self.assertIsInstance(data['data'], dict)
+            else:
+                self.assertEqual(data['error']['kind'], error_kind)
+            return data
+
+        self.initialize()
+        claude_session(
+            self.home, self.project, 'fixture-session', datetime(2026, 10, 1, tzinfo=timezone.utc),
+            'claude-sonnet-5-5', 'medium',
+            agents=[{'id': 'executor', 'type': 'gsd-executor', 'requested': 'sonnet',
+                     'model': 'claude-sonnet-5-5', 'effort': 'medium', 'parent': None}],
+        )
+        preview_args = ('codex', 'medium', '--config')
+        for name, args in (
+            ('check', ('check',)),
+            ('policy', ('policy',)),
+            ('sessions', ('sessions', 'claude')),
+            ('status', ('status',)),
+        ):
+            with self.subTest(schema=name, ok=True):
+                envelope = validate_envelope(name, args)
+                if name == 'policy':
+                    validators['policy-file'].validate(envelope['data']['policy'])
+                if name == 'sessions':
+                    child, = envelope['data']['sessions'][0]['children']
+                    self.assertEqual(child['agent_type'], 'gsd-executor')
+        if shutil.which('node', path=self.env['PATH']):
+            with self.subTest(schema='preview', ok=True):
+                preview = validate_envelope('preview', preview_args)
+                self.assertTrue(preview['data']['complete'])
+
+        bundle = self.home / '.codex' / 'gsd-core'
+        version = bundle / 'VERSION'
+        installed = version.read_bytes()
+        version.write_text('1.0.0\n', encoding='utf-8')
+        check = validate_envelope('check', ('check',), 1, 'requirements')
+        self.assertEqual([(r['runtime'], r['reason']) for r in check['data']['results']],
+                         [('claude', 'ok'), ('codex', 'below_minimum')])
+        with self.assertRaises(ValidationError):
+            validators['check'].validate({**check, 'schema_version': 1})
+        version.write_bytes(installed)
+        (bundle / 'bin/shared/model-catalog.json').unlink()
+        preview = validate_envelope('preview', preview_args, 1, 'incomplete')
+        self.assertFalse(preview['data']['complete'])
+        self.assertTrue(preview['data']['diagnostics'])
+
+        for name, args, code, kind, cwd in (
+            ('error', ('--unknown',), 2, 'usage', self.root),
+            ('check', ('check',), 1, 'config', self.root),
+            ('policy', ('policy',), 1, 'config', self.root),
+            ('sessions', ('sessions', 'invalid'), 1, 'usage', self.project),
+            ('status', ('status',), 1, 'config', self.root),
+        ):
+            with self.subTest(schema=name, ok=False):
+                envelope = validate_envelope(name, args, code, kind, cwd)
+                self.assertIsNone(envelope['data'])
 
     def test_unknown_name_is_usage_error(self):
         result = self.run_launcher('schema', 'nope', cwd=self.root)

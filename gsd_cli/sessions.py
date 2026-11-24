@@ -428,23 +428,52 @@ def reviewer_name(runtime: str) -> str | None:
     return next((name for name, entry in REVIEWERS.items() if entry["cli"] == runtime), None)
 
 
+def recorded_review(launch: dict | None) -> dict | None:
+    """None selects the pre-snapshot historical reviewer mapping."""
+    if not launch:
+        return None
+    config = launch.get('config')
+    review = config.get('review') if isinstance(config, dict) else None
+    if isinstance(launch.get('review'), dict):
+        return launch['review']
+    if isinstance(review, dict) and ('reviewer_instances' in review or 'workflow' in launch):
+        return review
+    return {} if 'blueprint' in launch or 'workflow' in launch else None
+
+
+def reviewer_expectation(review: dict | None, runtime: str) -> tuple:
+    if review is None:
+        name = reviewer_name(runtime)
+        return name, REVIEWERS.get(name, {}).get('model'), None
+    definitions = review.get('reviewer_instances')
+    selected = review.get('default_reviewers')
+    if not isinstance(definitions, dict) or not isinstance(selected, list):
+        return None, None, None
+    names = [name for name in selected if isinstance(name, str) and isinstance(definitions.get(name), dict)
+             and definitions[name].get('cli') == runtime]
+    if not names:
+        return None, None, None
+    effort = review.get('effort')
+    adapter_effort = expected_value(effort, runtime) if isinstance(effort, dict) else None
+    # Every active instance shares the adapter's effort. The logs identify a
+    # particular instance and its configured model only when it is unique.
+    if len(names) > 1:
+        return None, None, adapter_effort
+    return names[0], expected_value(definitions[names[0]], 'model'), adapter_effort
+
+
 def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> None:
     """Append mismatch marks to run and its descendants."""
+    label = 'blueprint' if launch and 'blueprint' in launch else 'profile'
     if run.kind == "reviewer":
-        if launch and 'workflow' in launch:
-            review = launch.get('config', {}).get('review', {})
-            definitions = review.get('reviewer_instances', {})
-            names = [name for name in review.get('default_reviewers', [])
-                     if definitions.get(name, {}).get('cli') == runtime]
-            # Logs do not identify an instance when several share an adapter.
-            name = names[0] if len(names) == 1 else None
-            expected = definitions[name].get('model') if name else None
+        review = recorded_review(launch)
+        name, expected, effort = reviewer_expectation(review, runtime)
+        if review is not None:
             run.launch = launch
-        else:
-            name = reviewer_name(runtime)
-            expected = REVIEWERS[name]["model"] if name else None
         if expected and run.model and not model_matches(runtime, expected, run.model):
             run.marks.append(f"! {name} expects {expected}")
+        if effort and run.effort and run.effort != effort:
+            run.marks.append(f"! {name or runtime} expects effort {effort}")
         launch = None  # a reviewer's own subagents are not routed by the session's profile
     elif run.kind == "session":
         if launch and overridden_at_launch(launch):
@@ -452,12 +481,12 @@ def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> No
         elif launch:
             model = expected_value(launch, "session_model")
             if model and run.model and not model_matches(runtime, model, run.model):
-                run.marks.append(f"! profile expects {model}")
+                run.marks.append(f"! {label} expects {model}")
             effort = expected_value(launch, "session_effort")
             if runtime == "codex" and effort and run.effort and effort != run.effort:
-                run.marks.append(f"! profile expects effort {effort}")
+                run.marks.append(f"! {label} expects effort {effort}")
         if run.resumed:
-            run.marks.append("resumed, profile may differ")
+            run.marks.append(f"resumed, {label} may differ")
     else:
         if run.requested_model and run.model and not model_matches(runtime, run.requested_model, run.model):
             run.marks.append(f"! asked {run.requested_model}, ran {run.model}")
@@ -465,9 +494,9 @@ def check(run: Run, resolver: Resolver, runtime: str, launch: dict | None) -> No
             entry = resolver.expected(launch, run.agent_type)
             model, effort = expected_value(entry, "model"), expected_value(entry, "effort")
             if model and run.model and not model_matches(runtime, model, run.model):
-                run.marks.append(f"! profile expects {model}")
+                run.marks.append(f"! {label} expects {model}")
             if effort and run.effort and effort != run.effort:
-                run.marks.append(f"! profile expects effort {effort}")
+                run.marks.append(f"! {label} expects effort {effort}")
     for child in run.children:
         check(child, resolver, child.runtime, launch)
 
@@ -480,14 +509,16 @@ def render(run: Run, depth: int = 0) -> list[str]:
     """Output lines for a run and, indented two spaces per level, its children."""
     if run.kind == "session":
         effort = f"{run.effort} (varied)" if run.effort_varied else run.effort
-        profile = run.launch.get("profile") if run.launch else None
+        launch = run.launch or {}
+        label = 'blueprint' if 'blueprint' in launch else 'profile'
+        selection = launch.get(label) or launch.get('workflow') or 'unknown'
         parts = [f"{run.runtime:<6}", run.start.astimezone().strftime("%Y-%m-%d %H:%M"),
-                 f"profile: {profile or 'unknown'}", f"{run.model or '?'}", f"{effort or '?'}"]
+                 f"{label}: {selection}", f"{run.model or '?'}", f"{effort or '?'}"]
         if run.advisor:
             parts.append(f"advisor {run.advisor}")
     elif run.kind == "reviewer":
-        parts = [f"reviewer {(run.model if run.launch and 'workflow' in run.launch else reviewer_name(run.runtime)) or run.model or '?'}",
-                 f"ran {run.model or '?'}"]
+        name, _, _ = reviewer_expectation(recorded_review(run.launch), run.runtime)
+        parts = [f"reviewer {name or run.runtime}", f"ran {with_effort(run.model, run.effort)}"]
     else:
         parts = [f"{run.agent_type or 'agent'}",
                  f"asked {with_effort(run.requested_model, run.requested_effort)}",
@@ -569,7 +600,7 @@ def launch_summary(launch: dict) -> models.LaunchSummary:
     def text(key):
         value = launch.get(key)
         return value if isinstance(value, str) else None
-    return models.LaunchSummary(time=text("time"), profile=text("profile"), workflow=text("workflow"),
+    return models.LaunchSummary(time=text("time"), blueprint=text("blueprint"), profile=text("profile"), workflow=text("workflow"),
                                 level=text("level"), session_model=text("session_model"),
                                 session_effort=text("session_effort"), forwarded_args=launch_args(launch))
 
@@ -642,9 +673,8 @@ def launch_log_path() -> Path:
     return Path(state) / "gsd-cli" / "launches.jsonl"
 
 
-def record_launch(root: Path, runtime: str, profile: str, session_model: str,
-                  forwarded: list[str], data: dict, *, effort: str | None = None,
-                  workflow: str | None = None, level: str | None = None, policy: dict | None = None) -> None:
+def record_launch(root: Path, runtime: str, blueprint: str, session_model: str,
+                  forwarded: list[str], data: dict, *, effort: str, review: dict, policy: dict) -> None:
     """Append one launch record (mode 0600: it embeds whole configs); a failure
     only warns."""
     try:
@@ -655,15 +685,15 @@ def record_launch(root: Path, runtime: str, profile: str, session_model: str,
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "project": str(root),
         "runtime": runtime,
-        "profile": profile,
+        "blueprint": blueprint,
+        "review": review,
+        "policy": policy,
         "session_model": session_model,
         "session_effort": effort,
         "forwarded_args": forwarded,
         "config": data,
         "gsd_defaults": defaults,
     }
-    if workflow is not None:
-        record.update(workflow=workflow, level=level, policy=policy)
     try:
         log = launch_log_path()
         log.parent.mkdir(parents=True, exist_ok=True)

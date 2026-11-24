@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -84,11 +85,13 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(self.inspect()['complete'])
 
     def test_partial_failure_and_malformed_output_are_explicit(self):
+        before = self.snapshot()
         result = self.inspect(data={'fail_agent': 'gsd-planner'})
         self.assertFalse(result['complete'])
         self.assertIn('gsd-verifier', result['agents'])
         self.assertIn('gsd-planner', ' '.join(result['diagnostics']))
         self.assertFalse(self.inspect(data={'malformed_result': True})['complete'])
+        self.assertEqual(self.snapshot(), before)
 
     def test_malformed_catalog_nested_metadata_is_incomplete(self):
         path = self.core / 'bin/shared/model-catalog.json'
@@ -98,6 +101,47 @@ class ResolverTests(unittest.TestCase):
         result = self.inspect()
         self.assertFalse(result['complete'])
         self.assertIn('catalog', ' '.join(result['diagnostics']))
+
+    def test_catalog_rejects_invalid_phase_metadata(self):
+        from gsd_cli.config import ConfigError
+        from gsd_cli.resolver import load_catalog
+        path = self.core / 'bin/shared/model-catalog.json'
+        path.write_text(json.dumps({'agents': {'gsd-executor': {'phaseType': []}}}))
+        with self.assertRaisesRegex(ConfigError, r'gsd-executor\.phaseType'):
+            load_catalog(self.core)
+
+    def test_installed_catalog_rejects_invalid_role_names(self):
+        from gsd_cli.config import ConfigError
+        from gsd_cli.resolver import load_catalog
+        path = self.core / 'bin/shared/model-catalog.json'
+        for role in ('executor', 'gsd-../../executor'):
+            with self.subTest(role=role):
+                path.write_text(json.dumps({'agents': {role: {'phaseType': 'execution'}}}))
+                with self.assertRaisesRegex(ConfigError, re.escape(role)):
+                    load_catalog(self.core)
+
+    def test_blueprint_values_match_installed_resolver(self):
+        from gsd_cli.config import put_path
+        from gsd_cli.policy import load_default, resolve
+        from gsd_cli.resolver import load_catalog
+        policy = load_default()
+        high = policy['runtimes']['codex']['blueprints']['high']
+        high['agents']['gsd-executor'] = {'effort': 'xhigh'}
+        high['phases']['verification'].update(model='gpt-6.1-sol', effort='medium')
+        resolved = resolve(policy, 'codex', 'high', load_catalog(self.core))
+        data = {}
+        for path, value in resolved['values'].items():
+            put_path(data, path, value)
+        result = self.inspect(data=data)
+        self.assertTrue(result['complete'], result['diagnostics'])
+        for agent, expected in {
+            'gsd-executor': ('gpt-6-astra', 'xhigh'),
+            'gsd-verifier': ('gpt-6.1-sol', 'medium'),
+            'gsd-codebase-mapper': ('gpt-6.1-sol', 'medium'),
+        }.items():
+            with self.subTest(agent=agent):
+                row = result['agents'][agent]
+                self.assertEqual((row['model'], row['effort']), expected)
 
     def test_timeout_is_incomplete(self):
         self.assertIsNotNone(importlib.util.find_spec('gsd_cli.resolver'), 'resolver adapter is not implemented')

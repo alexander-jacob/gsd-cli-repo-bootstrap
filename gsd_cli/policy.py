@@ -11,6 +11,12 @@ PHASES = ('planning', 'discuss', 'research', 'execution', 'verification')
 TIERS = dict(zip(LEVELS, ('haiku', 'sonnet', 'opus')))
 RESERVED = ('init', 'status', 'sessions', 'check', 'policy', 'schema', 'help', 'claude', 'codex')
 EFFORTS = ('low', 'medium', 'high', 'xhigh')
+CLAUDE_EFFORTS = (*EFFORTS, 'max')
+CLAUDE_AGENT_MODELS = ('fable', 'opus', 'sonnet', 'haiku')
+CODEX_RESERVED_AGENT_MODELS = (*CLAUDE_AGENT_MODELS, 'inherit')
+REVIEW_ADAPTERS = (*RUNTIMES, 'opencode')
+BLUEPRINT_NAME_PATTERN = r'^[a-z][a-z0-9-]*$'
+AGENT_NAME_PATTERN = r'^gsd-[a-z0-9-]+$'
 TRANSIENT = (('workflow', '_auto_chain_active'),)
 
 
@@ -22,13 +28,16 @@ def load_default() -> dict:
     return json.loads(files('gsd_cli').joinpath('data/default-config.json').read_text(encoding='utf-8'))
 
 
-def obj(value, path, required=(), optional=()):
+def obj(value, path, required=None, optional=()):
     if not isinstance(value, dict):
         raise PolicyError(f'{path}: expected an object')
-    missing = set(required) - value.keys()
-    unknown = value.keys() - set(required) - set(optional) if required else set()
-    if missing or unknown:
-        raise PolicyError(f'{path}: missing {sorted(missing)}, unknown {sorted(unknown)}')
+    if required is not None:
+        missing = set(required) - value.keys()
+        unknown = value.keys() - set(required) - set(optional)
+        if missing:
+            raise PolicyError(f'{path}.{min(missing)}: required')
+        if unknown:
+            raise PolicyError(f'{path}.{min(map(str, unknown))}: unknown field')
     return value
 
 
@@ -42,97 +51,142 @@ def string(value, path):
         raise PolicyError(f'{path}: expected a nonempty string')
 
 
+def is_agent_name(name) -> bool:
+    return isinstance(name, str) and re.fullmatch(AGENT_NAME_PATTERN, name) is not None
+
+
+def validate_settings(settings, path, runtime, *, agent=False, partial=False):
+    fields = ('model', 'effort')
+    obj(settings, path, () if partial else fields, fields if partial else ())
+    if not settings:
+        raise PolicyError(f'{path}: expected at least one of model and effort')
+    if 'model' in settings:
+        model = settings['model']
+        if agent and runtime == 'claude':
+            choice(model, CLAUDE_AGENT_MODELS, f'{path}.model')
+        elif agent and model in CODEX_RESERVED_AGENT_MODELS:
+            raise PolicyError(f'{path}.model: expected a full Codex model ID, got reserved token {model!r}')
+        else:
+            string(model, f'{path}.model')
+    if 'effort' in settings:
+        efforts = CLAUDE_EFFORTS if runtime == 'claude' else EFFORTS
+        choice(settings['effort'], efforts, f'{path}.effort')
+
+
+def validate_review(review, path):
+    obj(review, path, ('reviewer_instances', 'default_reviewers', 'effort', 'parallel_lanes'))
+    instances = obj(review['reviewer_instances'], f'{path}.reviewer_instances')
+    for name, entry in instances.items():
+        entry_path = f'{path}.reviewer_instances.{name}'
+        string(name, entry_path)
+        obj(entry, entry_path)
+        choice(entry.get('cli'), REVIEW_ADAPTERS, f'{entry_path}.cli')
+        string(entry.get('model'), f'{entry_path}.model')
+    names = review['default_reviewers']
+    if not isinstance(names, list):
+        raise PolicyError(f'{path}.default_reviewers: expected a list of declared reviewer names')
+    for index, name in enumerate(names):
+        if not isinstance(name, str) or name not in instances:
+            raise PolicyError(f'{path}.default_reviewers[{index}]: unknown reviewer {name!r}')
+    if len(names) != len(set(names)):
+        raise PolicyError(f'{path}.default_reviewers: duplicate reviewers')
+    for adapter, effort in obj(review['effort'], f'{path}.effort', REVIEW_ADAPTERS).items():
+        choice(effort, LEVELS if adapter == 'claude' else EFFORTS, f'{path}.effort.{adapter}')
+    if type(review['parallel_lanes']) is not bool:
+        raise PolicyError(f'{path}.parallel_lanes: expected boolean')
+
+
 def validate(p: dict) -> None:
-    if isinstance(p, dict) and 'gsd' not in p:
+    obj(p, 'policy')
+    if type(p.get('schema_version')) is int and p['schema_version'] == 1:
+        raise PolicyError('schema_version: manually convert the version-one policy in gsd-cli.config.json '
+                          'to version 2 (see MIGRATION.md)')
+    if 'gsd' not in p:
         raise PolicyError('gsd.min_version is required; add "gsd": {"min_version": "1.21.0"} '
                           'to gsd-cli.config.json, choosing the minimum your project requires')
-    obj(p, 'policy', ('gsd', 'schema_version', 'runtimes', 'phase_defaults', 'agent_levels',
-                     'agent_efforts', 'reviewers', 'reviewer_efforts', 'reviewer_groups', 'workflows', 'gsd_defaults'))
+    if type(p.get('schema_version')) is not int or p['schema_version'] != 2:
+        raise PolicyError('schema_version: expected 2')
+    obj(p, 'policy', ('gsd', 'schema_version', 'runtimes', 'gsd_defaults'))
     gsd = obj(p['gsd'], 'gsd', ('min_version',))
     try:
         parse_version(gsd['min_version'])
     except VersionError as exc:
         raise PolicyError(f'gsd.min_version: {exc}') from exc
-    if type(p['schema_version']) is not int or p['schema_version'] != 1:
-        raise PolicyError('schema_version: expected 1')
-    for runtime, levels in obj(p['runtimes'], 'runtimes', RUNTIMES).items():
-        for level, entry in obj(levels, f'runtimes.{runtime}', LEVELS).items():
-            path = f'runtimes.{runtime}.{level}'
-            obj(entry, path, ('session_model', 'agent_model', 'session_effort'))
-            for key in ('session_model', 'agent_model'):
-                string(entry[key], f'{path}.{key}')
-            if runtime == 'claude':
-                choice(entry['agent_model'], ('fable', 'opus', 'sonnet', 'haiku'), f'{path}.agent_model')
-            choice(entry['session_effort'], EFFORTS if runtime == 'codex' else LEVELS, f'{path}.session_effort')
-    for phase, level in obj(p['phase_defaults'], 'phase_defaults', PHASES).items():
-        choice(level, LEVELS, f'phase_defaults.{phase}')
-    for field, allowed in [('agent_levels', LEVELS), ('agent_efforts', EFFORTS)]:
-        for agent, value in obj(p[field], field).items():
-            if not re.fullmatch(r'gsd-[a-z0-9-]+', agent):
-                raise PolicyError(f'{field}.{agent}: expected a GSD agent name')
-            choice(value, allowed, f'{field}.{agent}')
-    for name, entry in obj(p['reviewers'], 'reviewers').items():
-        string(name, 'reviewer name')
-        obj(entry, f'reviewers.{name}')
-        choice(entry.get('cli'), (*RUNTIMES, 'opencode'), f'reviewers.{name}.cli')
-        string(entry.get('model'), f'reviewers.{name}.model')
-    for adapter, effort in obj(p['reviewer_efforts'], 'reviewer_efforts', (*RUNTIMES, 'opencode')).items():
-        choice(effort, LEVELS if adapter == 'claude' else EFFORTS, f'reviewer_efforts.{adapter}')
-    for name, group in obj(p['reviewer_groups'], 'reviewer_groups').items():
-        if not isinstance(group, list) or any(not isinstance(x, str) or x not in p['reviewers'] for x in group):
-            raise PolicyError(f'reviewer_groups.{name}: expected a list of declared reviewer names')
-        if len(group) != len(set(group)):
-            raise PolicyError(f'reviewer_groups.{name}: duplicate reviewers')
-    for name, w in obj(p['workflows'], 'workflows').items():
-        if not re.fullmatch(r'[a-z][a-z0-9-]*', name) or name in RESERVED:
-            raise PolicyError(f'workflows.{name}: reserved or invalid workflow name')
-        obj(w, f'workflows.{name}', ('tasks', 'task_levels', 'reviewer_groups', 'parallel_reviews', 'permissions'), ('session_efforts',))
-        if not isinstance(w['tasks'], list):
-            raise PolicyError(f'workflows.{name}.tasks: expected list')
-        for phase in w['tasks']:
-            choice(phase, PHASES, f'workflows.{name}.tasks')
-        if len(set(w['tasks'])) != len(w['tasks']):
-            raise PolicyError(f'workflows.{name}.tasks: duplicate task')
-        for phase, level in obj(w['task_levels'], f'workflows.{name}.task_levels').items():
-            choice(phase, PHASES, f'workflows.{name}.task_levels')
-            choice(level, LEVELS, f'workflows.{name}.task_levels.{phase}')
-            if phase in w['tasks']:
-                raise PolicyError(f'workflows.{name}: overlapping task {phase}')
-        for runtime, group in obj(w['reviewer_groups'], f'workflows.{name}.reviewer_groups', RUNTIMES).items():
-            choice(group, tuple(p['reviewer_groups']), f'workflows.{name}.reviewer_groups.{runtime}')
-        if type(w['parallel_reviews']) is not bool:
-            raise PolicyError(f'workflows.{name}.parallel_reviews: expected boolean')
-        for runtime, permission in obj(w['permissions'], f'workflows.{name}.permissions', RUNTIMES).items():
-            choice(permission, ('normal', 'bypass'), f'workflows.{name}.permissions.{runtime}')
-        for runtime, entries in obj(w.get('session_efforts', {}), f'workflows.{name}.session_efforts').items():
-            choice(runtime, RUNTIMES, f'workflows.{name}.session_efforts')
-            for level, effort in obj(entries, f'session_efforts.{runtime}').items():
-                choice(level, LEVELS, f'session_efforts.{runtime}')
-                choice(effort, EFFORTS if runtime == 'codex' else LEVELS, f'session_efforts.{runtime}.{level}')
+
+    for runtime, section in obj(p['runtimes'], 'runtimes', RUNTIMES).items():
+        path = f'runtimes.{runtime}'
+        obj(section, path, ('blueprints', 'review'))
+        validate_review(section['review'], f'{path}.review')
+        blueprints_path = f'{path}.blueprints'
+        blueprints = obj(section['blueprints'], blueprints_path)
+        if not blueprints:
+            raise PolicyError(f'{blueprints_path}: expected at least one blueprint')
+        for name, blueprint in blueprints.items():
+            blueprint_path = f'{blueprints_path}.{name}'
+            if not isinstance(name, str) or not re.fullmatch(BLUEPRINT_NAME_PATTERN, name):
+                raise PolicyError(f'{blueprint_path}: invalid blueprint name')
+            obj(blueprint, blueprint_path, ('session', 'phases'), ('agents',))
+            validate_settings(blueprint['session'], f'{blueprint_path}.session', runtime)
+            phases = obj(blueprint['phases'], f'{blueprint_path}.phases', PHASES)
+            for phase, settings in phases.items():
+                validate_settings(settings, f'{blueprint_path}.phases.{phase}', runtime, agent=True)
+            for agent, settings in obj(blueprint.get('agents', {}), f'{blueprint_path}.agents').items():
+                agent_path = f'{blueprint_path}.agents.{agent}'
+                if not is_agent_name(agent):
+                    raise PolicyError(f'{agent_path}: expected a GSD agent name')
+                validate_settings(settings, agent_path, runtime, agent=True, partial=True)
     obj(p['gsd_defaults'], 'gsd_defaults')
 
 
-def resolve(p: dict, workflow: str, runtime: str, level: str) -> dict:
+def select_blueprint(p: dict, runtime: str, blueprint: str | None) -> dict:
+    """Select a runtime-local blueprint without depending on an installation."""
     validate(p)
-    choice(workflow, tuple(p['workflows']), 'workflow')
     choice(runtime, RUNTIMES, 'runtime')
-    choice(level, LEVELS, 'level')
-    w = p['workflows'][workflow]
-    entry = p['runtimes'][runtime][level]
-    phases = {**p['phase_defaults'], **dict.fromkeys(w['tasks'], level), **w['task_levels']}
-    values = {('model_policy', 'provider'): 'generic'}
-    for rt, levels in p['runtimes'].items():
-        values[('model_policy', 'runtime_tiers', rt)] = {
-            TIERS[lev]: {'model': e['agent_model'], **({'reasoning_effort': e['session_effort']} if rt == 'codex' else {})}
-            for lev, e in levels.items()}
-    values.update({('models', phase): TIERS[lev] for phase, lev in phases.items()})
-    values.update({('model_overrides', agent): p['runtimes'][runtime][lev]['agent_model'] for agent, lev in p['agent_levels'].items()})
-    values.update({('effort', 'agent_overrides', agent): effort for agent, effort in p['agent_efforts'].items()})
-    values.update({('review', 'reviewer_instances', name): reviewer for name, reviewer in p['reviewers'].items()})
-    values.update({('review', 'effort', adapter): effort for adapter, effort in p['reviewer_efforts'].items()})
-    reviewers = p['reviewer_groups'][w['reviewer_groups'][runtime]]
-    values[('review', 'default_reviewers')] = reviewers
-    values[('review', 'parallel_lanes')] = w['parallel_reviews']
-    return {'values': values, 'model': entry['session_model'],
-            'effort': w.get('session_efforts', {}).get(runtime, {}).get(level, entry['session_effort']),
-            'reviewers': reviewers, 'permissions': w['permissions'][runtime]}
+    blueprints = p['runtimes'][runtime]['blueprints']
+    if blueprint not in blueprints:
+        reason = 'blueprint required' if blueprint is None else f'unknown blueprint {blueprint!r}'
+        raise PolicyError(f'runtimes.{runtime}.blueprints: {reason}. Choose from {", ".join(sorted(blueprints))}')
+    return blueprints[blueprint]
+
+
+def resolve(p: dict, runtime: str, blueprint: str, catalog: dict) -> dict:
+    """Expand blueprint settings against the validated installed manifest."""
+    selected = select_blueprint(p, runtime, blueprint)
+    path = f'runtimes.{runtime}.blueprints.{blueprint}'
+    registered = catalog['agents']
+    overrides = selected.get('agents', {})
+    for name in sorted(overrides.keys() - registered.keys()):
+        raise PolicyError(f'{path}.agents.{name}: role is missing from the installed {runtime} GSD catalog')
+
+    review = p['runtimes'][runtime]['review']
+    values = {('review', 'reviewer_instances', name): reviewer for name, reviewer in review['reviewer_instances'].items()}
+    values.update({('review', 'effort', adapter): effort for adapter, effort in review['effort'].items()})
+    values['review', 'default_reviewers'] = review['default_reviewers']
+    values['review', 'parallel_lanes'] = review['parallel_lanes']
+    agents = {}
+    for name, metadata in registered.items():
+        if not is_agent_name(name):
+            raise PolicyError(f'catalog.agents.{name!r}: expected a GSD agent name')
+        phase = metadata.get('phaseType')
+        defaults = selected['phases'].get(phase, {})
+        override = overrides.get(name, {})
+        agent = {'phase': phase}
+        for field in ('model', 'effort'):
+            if field in override:
+                agent[field] = override[field]
+                agent[f'{field}_source'] = f'{path}.agents.{name}.{field}'
+            elif field in defaults:
+                agent[field] = defaults[field]
+                agent[f'{field}_source'] = f'{path}.phases.{phase}.{field}'
+            elif override:
+                raise PolicyError(f'{path}.agents.{name}.{field}: required because the installed role '
+                                  'has no configured phase to supply this field')
+            else:
+                agent[field] = None
+                agent[f'{field}_source'] = None
+        agents[name] = agent
+        if agent['model'] is not None:
+            values['model_overrides', name] = agent['model']
+            values['effort', 'agent_overrides', name] = agent['effort']
+    return {**selected['session'], 'values': values, 'reviewers': review['default_reviewers'],
+            'review': review, 'agents': agents}

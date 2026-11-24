@@ -23,7 +23,7 @@ resolver or Claude agent frontmatter actually selects.
 
 ## What a reliable workflow needs
 
-Keep the intended policy in version control, select the workflow and runtime
+Keep the intended policy in version control, select the runtime and blueprint
 explicitly, check the installed resolver before spending model time, and retain
 persistent GSD edits without mixing them with generated launch settings.
 
