@@ -104,3 +104,107 @@ class PolicyTests(unittest.TestCase):
             p['gsd'] = value
             with self.subTest(value=value), self.assertRaisesRegex(PolicyError, 'gsd'):
                 validate(p)
+
+
+class BlueprintRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = load_default()
+        self.blueprint = self.policy['runtimes']['codex']['blueprints']['high']
+        self.blueprint.update({
+            'session': {'model': 'gpt-6-astra', 'effort': 'high'},
+            'phases': {
+                'planning': {'model': 'gpt-6-astra', 'effort': 'high'},
+                'discuss': {'model': 'gpt-6.1-sol', 'effort': 'medium'},
+                'research': {'model': 'gpt-6.1-sol', 'effort': 'high'},
+                'execution': {'model': 'gpt-6-astra', 'effort': 'high'},
+                'verification': {'model': 'gpt-6.1-sol', 'effort': 'high'},
+            },
+            'agents': {
+                'gsd-executor': {'effort': 'xhigh'},
+                'gsd-codebase-mapper': {'model': 'gpt-6-luna', 'effort': 'medium'},
+            },
+        })
+        self.catalog = {'agents': {
+            'gsd-executor': {'phaseType': 'execution'},
+            'gsd-codebase-mapper': {'phaseType': 'research'},
+            'gsd-verifier': {'phaseType': 'verification'},
+            'gsd-future-agent': {'phaseType': 'future'},
+        }}
+
+    def resolve(self, runtime='codex', name='high'):
+        from gsd_cli.policy import resolve
+        return resolve(self.policy, runtime, name, self.catalog)
+
+    def test_executor_inherits_only_missing_fields(self):
+        resolved = self.resolve()
+        self.assertEqual(resolved['agents']['gsd-executor'], {
+            'model': 'gpt-6-astra', 'effort': 'xhigh', 'phase': 'execution',
+            'model_source': 'runtimes.codex.blueprints.high.phases.execution.model',
+            'effort_source': 'runtimes.codex.blueprints.high.agents.gsd-executor.effort',
+        })
+        self.assertEqual(resolved['values']['model_overrides', 'gsd-executor'], 'gpt-6-astra')
+        self.assertEqual(resolved['values']['effort', 'agent_overrides', 'gsd-executor'], 'xhigh')
+        del self.blueprint['agents']['gsd-executor']
+        executor = self.resolve()['agents']['gsd-executor']
+        self.assertEqual(executor['effort'], 'high')
+        self.assertEqual(executor['effort_source'], 'runtimes.codex.blueprints.high.phases.execution.effort')
+
+    def test_model_only_override_inherits_phase_effort(self):
+        self.blueprint['agents']['gsd-executor'] = {'model': 'gpt-6-luna'}
+        executor = self.resolve()['agents']['gsd-executor']
+        self.assertEqual(executor['model'], 'gpt-6-luna')
+        self.assertEqual(executor['model_source'], 'runtimes.codex.blueprints.high.agents.gsd-executor.model')
+        self.assertEqual(executor['effort'], 'high')
+
+    def test_verifier_uses_verification_settings_in_same_session_as_executor(self):
+        resolved = self.resolve()
+        self.assertEqual((resolved['model'], resolved['effort']), ('gpt-6-astra', 'high'))
+        self.assertEqual(resolved['values']['model_overrides', 'gsd-verifier'], 'gpt-6.1-sol')
+        self.assertEqual(resolved['values']['effort', 'agent_overrides', 'gsd-verifier'], 'high')
+
+    def test_explicit_role_missing_from_catalog_is_an_error(self):
+        del self.catalog['agents']['gsd-codebase-mapper']
+        with self.assertRaisesRegex(PolicyError, r'runtimes\.codex\.blueprints\.high\.agents\.gsd-codebase-mapper'):
+            self.resolve()
+
+    def test_uncovered_role_is_visible_without_managed_values(self):
+        resolved = self.resolve()
+        self.assertEqual(resolved['agents']['gsd-future-agent'], {
+            'phase': 'future', 'model': None, 'effort': None,
+            'model_source': None, 'effort_source': None,
+        })
+        self.assertFalse(any(path[-1] == 'gsd-future-agent' for path in resolved['values']))
+
+    def test_uncovered_role_can_supply_both_fields(self):
+        self.catalog['agents']['gsd-future-agent'] = {}
+        self.blueprint['agents']['gsd-future-agent'] = {'model': 'gpt-6-luna', 'effort': 'medium'}
+        resolved = self.resolve()
+        self.assertEqual(resolved['values']['model_overrides', 'gsd-future-agent'], 'gpt-6-luna')
+        self.assertEqual(resolved['values']['effort', 'agent_overrides', 'gsd-future-agent'], 'medium')
+
+    def test_uncovered_partial_override_reports_missing_field_path(self):
+        self.blueprint['agents']['gsd-future-agent'] = {'model': 'gpt-6-luna'}
+        with self.assertRaisesRegex(PolicyError, r'runtimes\.codex\.blueprints\.high\.agents\.gsd-future-agent\.effort'):
+            self.resolve()
+
+    def test_only_selected_runtime_review_settings_are_emitted(self):
+        review = self.policy['runtimes']['codex']['review']
+        review['reviewer_instances']['custom-review'] = {'cli': 'opencode', 'model': 'custom-model'}
+        review['default_reviewers'] = ['custom-review']
+        resolved = self.resolve()
+        self.assertEqual(resolved['reviewers'], ['custom-review'])
+        self.assertEqual(resolved['review']['reviewer_instances']['custom-review']['cli'], 'opencode')
+        expected = {
+            ('review', 'reviewer_instances', name): reviewer for name, reviewer in review['reviewer_instances'].items()
+        }
+        expected.update({('review', 'effort', cli): effort for cli, effort in review['effort'].items()})
+        expected['review', 'default_reviewers'] = ['custom-review']
+        expected['review', 'parallel_lanes'] = review['parallel_lanes']
+        self.assertEqual({path: value for path, value in resolved['values'].items() if path[0] == 'review'}, expected)
+        self.assertLessEqual({path[0] for path in resolved['values']}, {'review', 'model_overrides', 'effort'})
+
+    def test_unknown_blueprint_lists_only_selected_runtime_choices(self):
+        self.policy['runtimes']['codex']['blueprints']['xhigh'] = self.blueprint
+        with self.assertRaisesRegex(PolicyError, r'runtimes\.claude\.blueprints.*high, low, medium') as error:
+            self.resolve('claude', 'xhigh')
+        self.assertNotIn('medium, xhigh', str(error.exception))

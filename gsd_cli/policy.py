@@ -133,27 +133,53 @@ def validate(p: dict) -> None:
     obj(p['gsd_defaults'], 'gsd_defaults')
 
 
-def resolve(p: dict, workflow: str, runtime: str, level: str) -> dict:
+def select_blueprint(p: dict, runtime: str, blueprint: str | None) -> dict:
+    """Select a runtime-local blueprint without depending on an installation."""
     validate(p)
-    choice(workflow, tuple(p['workflows']), 'workflow')
     choice(runtime, RUNTIMES, 'runtime')
-    choice(level, LEVELS, 'level')
-    w = p['workflows'][workflow]
-    entry = p['runtimes'][runtime][level]
-    phases = {**p['phase_defaults'], **dict.fromkeys(w['tasks'], level), **w['task_levels']}
-    values = {('model_policy', 'provider'): 'generic'}
-    for rt, levels in p['runtimes'].items():
-        values[('model_policy', 'runtime_tiers', rt)] = {
-            TIERS[lev]: {'model': e['agent_model'], **({'reasoning_effort': e['session_effort']} if rt == 'codex' else {})}
-            for lev, e in levels.items()}
-    values.update({('models', phase): TIERS[lev] for phase, lev in phases.items()})
-    values.update({('model_overrides', agent): p['runtimes'][runtime][lev]['agent_model'] for agent, lev in p['agent_levels'].items()})
-    values.update({('effort', 'agent_overrides', agent): effort for agent, effort in p['agent_efforts'].items()})
-    values.update({('review', 'reviewer_instances', name): reviewer for name, reviewer in p['reviewers'].items()})
-    values.update({('review', 'effort', adapter): effort for adapter, effort in p['reviewer_efforts'].items()})
-    reviewers = p['reviewer_groups'][w['reviewer_groups'][runtime]]
-    values[('review', 'default_reviewers')] = reviewers
-    values[('review', 'parallel_lanes')] = w['parallel_reviews']
-    return {'values': values, 'model': entry['session_model'],
-            'effort': w.get('session_efforts', {}).get(runtime, {}).get(level, entry['session_effort']),
-            'reviewers': reviewers, 'permissions': w['permissions'][runtime]}
+    blueprints = p['runtimes'][runtime]['blueprints']
+    if blueprint not in blueprints:
+        reason = 'blueprint required' if blueprint is None else f'unknown blueprint {blueprint!r}'
+        raise PolicyError(f'runtimes.{runtime}.blueprints: {reason}. Choose from {", ".join(sorted(blueprints))}')
+    return blueprints[blueprint]
+
+
+def resolve(p: dict, runtime: str, blueprint: str, catalog: dict) -> dict:
+    """Expand blueprint settings against the validated installed manifest."""
+    selected = select_blueprint(p, runtime, blueprint)
+    path = f'runtimes.{runtime}.blueprints.{blueprint}'
+    registered = catalog['agents']
+    overrides = selected.get('agents', {})
+    for name in sorted(overrides.keys() - registered.keys()):
+        raise PolicyError(f'{path}.agents.{name}: role is missing from the installed {runtime} GSD catalog')
+
+    review = p['runtimes'][runtime]['review']
+    values = {('review', 'reviewer_instances', name): reviewer for name, reviewer in review['reviewer_instances'].items()}
+    values.update({('review', 'effort', adapter): effort for adapter, effort in review['effort'].items()})
+    values['review', 'default_reviewers'] = review['default_reviewers']
+    values['review', 'parallel_lanes'] = review['parallel_lanes']
+    agents = {}
+    for name, metadata in registered.items():
+        phase = metadata.get('phaseType')
+        defaults = selected['phases'].get(phase, {})
+        override = overrides.get(name, {})
+        agent = {'phase': phase}
+        for field in ('model', 'effort'):
+            if field in override:
+                agent[field] = override[field]
+                agent[f'{field}_source'] = f'{path}.agents.{name}.{field}'
+            elif field in defaults:
+                agent[field] = defaults[field]
+                agent[f'{field}_source'] = f'{path}.phases.{phase}.{field}'
+            elif override:
+                raise PolicyError(f'{path}.agents.{name}.{field}: required because the installed role '
+                                  'has no configured phase to supply this field')
+            else:
+                agent[field] = None
+                agent[f'{field}_source'] = None
+        agents[name] = agent
+        if agent['model'] is not None:
+            values['model_overrides', name] = agent['model']
+            values['effort', 'agent_overrides', name] = agent['effort']
+    return {**selected['session'], 'values': values, 'reviewers': review['default_reviewers'],
+            'review': review, 'agents': agents}

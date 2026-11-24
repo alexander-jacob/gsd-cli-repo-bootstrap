@@ -4,6 +4,28 @@ from pathlib import Path
 from test_versions import install_gsd
 
 
+AGENT_PHASES = {
+    'gsd-assumptions-analyzer': 'discuss',
+    'gsd-codebase-mapper': 'research',
+    'gsd-debugger': 'execution',
+    'gsd-doc-classifier': 'research',
+    'gsd-doc-verifier': 'verification',
+    'gsd-executor': 'execution',
+    'gsd-integration-checker': 'verification',
+    'gsd-intel-updater': 'research',
+    'gsd-mempalace-curator': 'research',
+    'gsd-nyquist-auditor': 'verification',
+    'gsd-pattern-mapper': 'planning',
+    'gsd-plan-checker': 'verification',
+    'gsd-planner': 'planning',
+    'gsd-research-synthesizer': 'research',
+    'gsd-roadmapper': 'planning',
+    'gsd-security-auditor': 'verification',
+    'gsd-user-profiler': 'research',
+    'gsd-verifier': 'verification',
+}
+
+
 def install_resolver(directory: Path, model='fixture-model') -> Path:
     install_gsd(directory)
     core = directory / 'gsd-core'
@@ -12,9 +34,7 @@ def install_resolver(directory: Path, model='fixture-model') -> Path:
     shared = core / 'bin/shared'
     shared.mkdir(parents=True, exist_ok=True)
     (shared / 'model-catalog.json').write_text(json.dumps({'agents': {
-        'gsd-planner': {'phaseType': 'planning', 'routingTier': 'heavy'},
-        'gsd-executor': {'phaseType': 'execution', 'routingTier': 'heavy'},
-        'gsd-verifier': {'phaseType': 'verification', 'routingTier': 'heavy'},
+        name: {'phaseType': phase, 'routingTier': 'heavy'} for name, phase in AGENT_PHASES.items()
     }}))
     # Invoking the public CLI would mutate the installation. The bridge must
     # require the command module directly instead.
