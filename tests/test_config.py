@@ -422,8 +422,10 @@ class ConfigTests(unittest.TestCase):
         codex, claude = copy.deepcopy(self.catalog), copy.deepcopy(self.catalog)
         codex['agents']['gsd-only-codex'] = {'phaseType': 'planning'}
         claude['agents']['gsd-only-claude'] = {'phaseType': 'research'}
-        self.sync('codex', catalog=codex)
-        data, _ = self.sync('claude', catalog=claude)
+        _, captured = self.sync('codex', catalog=codex)
+        self.assertEqual(captured, [])
+        data, captured = self.sync('claude', catalog=claude)
+        self.assertEqual(captured, [])
         self.assertNotIn('gsd-only-codex', data['model_overrides'])
         self.assertEqual(self.get(self.default)['model_overrides'], {'gsd-custom': 'keep'})
         self.assertEqual(data['model_overrides']['gsd-custom'], 'keep')

@@ -305,7 +305,6 @@ def prepare(default: dict, working: dict | None, state: dict | None,
     excluded = current | previous | set(TRANSIENT)
     # Init may predate the selected runtime's catalog. Release only leaves
     # copied from the old working config, with their original values intact.
-    original_default = default
     default = copy.deepcopy(default)
     provisional = []
     for entry in (state or {}).get('provisional', []):
@@ -340,7 +339,7 @@ def prepare(default: dict, working: dict | None, state: dict | None,
     metadata = {'version': 1, 'baseline': merged, 'managed': sorted(current)}
     if provisional:
         metadata['provisional'] = provisional
-    return data, merged, metadata, changed_paths(original_default, merged)
+    return data, merged, metadata, changed_paths(default, merged)
 
 
 def input_stamps(root: Path) -> dict:
